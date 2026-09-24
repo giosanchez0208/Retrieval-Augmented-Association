@@ -128,6 +128,20 @@ class Detections(_Rows):
     score: np.ndarray  # (N,) float32
 
 
+@dataclass(frozen=True)
+class Tracks(_Rows):
+    """Tracker output: one box per track and frame, sorted by frame, then track id."""
+
+    frame: np.ndarray  # (N,) int32, 1-based
+    track_id: np.ndarray  # (N,) int32
+    xyxy: np.ndarray  # (N, 4) float32, 0-based pixels
+    score: np.ndarray  # (N,) float32
+
+    @classmethod
+    def from_gt(cls, gt: GroundTruth) -> Tracks:
+        return cls(gt.frame, gt.track_id, gt.xyxy, np.ones(len(gt), dtype=np.float32))
+
+
 def load_gt(path: str | Path) -> GroundTruth:
     rows = _read_rows(path, min_cols=9)
     rows = rows[np.lexsort((rows[:, 1], rows[:, 0]))]
@@ -150,6 +164,30 @@ def load_det(path: str | Path) -> Detections:
         xyxy=_tlwh_to_xyxy(rows[:, 2:6]),
         score=rows[:, 6].astype(np.float32),
     )
+
+
+def load_tracks(path: str | Path) -> Tracks:
+    rows = _read_rows(path, min_cols=6)
+    rows = rows[np.lexsort((rows[:, 1], rows[:, 0]))]
+    score = rows[:, 6] if rows.shape[1] > 6 else np.ones(len(rows))
+    return Tracks(
+        frame=rows[:, 0].astype(np.int32),
+        track_id=rows[:, 1].astype(np.int32),
+        xyxy=_tlwh_to_xyxy(rows[:, 2:6]),
+        score=score.astype(np.float32),
+    )
+
+
+def save_tracks(path: str | Path, tracks: Tracks) -> None:
+    """Write tracks in the MOTChallenge results format (1-based boxes)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    xyxy = tracks.xyxy.astype(np.float64)
+    left, top = xyxy[:, 0] + 1, xyxy[:, 1] + 1
+    width, height = xyxy[:, 2] - xyxy[:, 0], xyxy[:, 3] - xyxy[:, 1]
+    with open(path, "w", newline="\n") as f:
+        for row in zip(tracks.frame.tolist(), tracks.track_id.tolist(), left, top, width, height, tracks.score):
+            f.write("{},{},{:.2f},{:.2f},{:.2f},{:.2f},{:.4f},-1,-1,-1\n".format(*row))
 
 
 def _read_rows(path: str | Path, min_cols: int) -> np.ndarray:

@@ -37,3 +37,12 @@ def release(tmp_path: Path) -> Path:
     write_release(raw, {"MOT17-02": 6, "MOT17-04": 5})
     write_release(raw, {"MOT17-01": 4}, subset="test")
     return raw
+
+
+@pytest.fixture
+def prepared(release: Path, tmp_path: Path) -> Path:
+    from reidtrack.data import prepare
+
+    out = tmp_path / "prepared"
+    assert prepare.main(["--raw", str(release), "--out", str(out)]) == 0
+    return out

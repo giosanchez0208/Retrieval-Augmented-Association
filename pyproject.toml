@@ -1,13 +1,21 @@
 [project]
 name = "reidtrack"
 version = "0.1.0"
-description = "Multi-person tracking with learned spatial-aware association and an identity bank."
+description = "Multi-person tracking with retrieval-augmented association and an identity memory."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Gio Sanchez" }]
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26"]
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.10",
+    "pillow>=10.1",
+    "scipy>=1.11",
+    "torch>=2.14",
+    "torchvision>=0.29",
+    "trackeval @ git+https://github.com/JonathonLuiten/TrackEval@12c8791b303e0a0b50f753af204249e622d0281a",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -15,6 +23,18 @@ dev = ["pytest>=8"]
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

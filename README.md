@@ -1,11 +1,13 @@
 # Spatial-Aware Multi-Person Re-Identification
 
-Multi-person tracking with a learned, spatial-aware association model and an
-identity bank that keeps people through occlusions and re-identifies them when
-they come back into view. Benchmarked on MOT17.
+Multi-person tracking by retrieval-augmented association. Each detection
+retrieves candidate identities from a memory of the people seen so far. A
+spatial-aware model then assigns identities to everyone in the frame at once.
+The memory keeps people through occlusions and re-identifies them when they
+return. Benchmarked on MOT17.
 
-**Status:** early development. Data preparation is in place; baselines and
-models come next.
+**Status:** early development. Data preparation, evaluation, visualisation and
+latency tooling are in place; baselines come next.
 
 ## Background
 
@@ -23,6 +25,8 @@ Requires [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync
 ```
+
+On Windows and Linux this installs PyTorch built for CUDA 13.0.
 
 ## Data
 
@@ -73,6 +77,37 @@ uv run python -m reidtrack.data.stats --root data/mot17
 ```
 
 MOT17 is not part of this repository and remains under its own terms.
+
+## Evaluation
+
+```bash
+uv run python -m reidtrack.eval --results runs/<tracker> --split val_half
+uv run python -m reidtrack.eval --oracle
+```
+
+Result files are one `<sequence>.txt` per sequence in MOT format, using the
+sequence's own frame numbers; rows outside the split are ignored. Scoring uses
+TrackEval (HOTA, CLEAR, Identity). `--oracle` scores the ground truth itself and
+must report 100.
+
+## Visualisation
+
+```bash
+uv run python -m reidtrack.viz MOT17-02 --gt --split val_half --scale 0.5
+uv run python -m reidtrack.viz MOT17-02 --results runs/<tracker>/MOT17-02.txt --frame 340
+```
+
+Writes an MP4, or a PNG for a single `--frame`, to `runs/viz/`. People who are
+annotated but hidden are drawn dashed.
+
+## Latency
+
+```bash
+uv run python -m reidtrack.eval.latency --seq MOT17-04
+```
+
+Benchmarks reading and decoding frames. `StageTimer` in
+`reidtrack.eval.latency` times the stages of a pipeline.
 
 ## Tests
 
