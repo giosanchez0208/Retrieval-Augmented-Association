@@ -1,0 +1,17 @@
+# Datasets (large, third-party licensed; never commit)
+/MOT17/
+/MOT17Labels/
+/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Experiment outputs
+/runs/
+/outputs/

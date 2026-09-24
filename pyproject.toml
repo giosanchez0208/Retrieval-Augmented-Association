@@ -1,0 +1,18 @@
+[project]
+name = "reidtrack"
+version = "0.1.0"
+description = "Multi-person tracking with learned spatial-aware association and an identity bank."
+readme = "README.md"
+authors = [{ name = "Gio Sanchez" }]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
