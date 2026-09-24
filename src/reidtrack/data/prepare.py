@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     except ReleaseMismatch as err:
         print(f"release check failed: {err}", file=sys.stderr)
         return 1
-    print(f"verified {len(sequences)} sequences: the {', '.join(DETECTORS)} copies are identical")
+    print(f"verified {len(sequences)} sequences ({', '.join(DETECTORS)} copies identical)")
 
     duplicate_bytes = 0
     manifest = {}
@@ -233,7 +233,6 @@ def main(argv: list[str] | None = None) -> int:
                 entry["splits"][split] = [rng.first, rng.last]
                 export_trackeval_gt(seq_dir, seq.info, trackeval_dir, split)
         manifest[seq.name] = entry
-        print(f"  {seq.subset}/{seq.name}: {seq.info.length} frames")
 
     for split in SPLITS:
         _write_text(
@@ -256,12 +255,9 @@ def main(argv: list[str] | None = None) -> int:
         + "\n",
     )
 
-    others = [d for d in DETECTORS if d != REFERENCE_DETECTOR]
-    print(f"wrote {args.out}")
-    print(
-        f"the {' and '.join(others)} image copies in {args.raw} ({duplicate_bytes / 1e9:.1f} GB) are duplicates; "
-        f"once you have checked {args.out}, {args.raw} can be deleted"
-    )
+    frames = sum(seq.info.length for seq in sequences)
+    print(f"wrote {args.out} ({len(sequences)} sequences, {frames} frames)")
+    print(f"duplicate images left in {args.raw}: {duplicate_bytes / 1e9:.1f} GB")
     return 0
 
 

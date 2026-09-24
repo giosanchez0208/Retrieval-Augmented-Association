@@ -13,6 +13,7 @@ import numpy as np
 
 from reidtrack.data.mot import GroundTruth
 from reidtrack.data.mot17 import DETECTORS, Mot17, Sequence
+from reidtrack.report import format_table
 
 HIDDEN = 0.1  # visibility below this counts as fully hidden
 LOW_VISIBILITY = 0.25
@@ -91,113 +92,75 @@ def _pct(part: int, whole: int) -> str:
     return f"{100 * part / whole:.1f}%" if whole else "-"
 
 
-def _print_table(headers: list[str], rows: list[list[str]]) -> None:
-    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
-    for row in (headers, ["-" * w for w in widths], *rows):
-        cells = [c.ljust(w) if i == 0 else c.rjust(w) for i, (c, w) in enumerate(zip(row, widths))]
-        print("  ".join(cells))
-    print()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Summary statistics for the prepared MOT17 training set.")
-    parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
-    args = parser.parse_args(argv)
-    sequences = [s for s in Mot17(args.root).sequences("train") if s.has_gt]
-
+def _sequence_table(sequences: list[Sequence]) -> str:
     rows, total = [], dict.fromkeys(("ids", "boxes", "low_vis", "truncated", "gaps", "gaps_1s", "gaps_2s"), 0)
-    frames = 0
-    longest = 0.0
+    frames, longest = 0, 0.0
     for seq in sequences:
-        s = sequence_summary(seq)
-        info = seq.info
+        s, info = sequence_summary(seq), seq.info
         rows.append(
-            [
-                seq.name,
-                str(info.frame_rate),
-                str(info.length),
-                f"{info.width}x{info.height}",
-                "moving" if seq.moving_camera else "static",
-                str(s["ids"]),
-                str(s["boxes"]),
-                _pct(s["low_vis"], s["boxes"]),
-                _pct(s["truncated"], s["boxes"]),
-                str(s["gaps"]),
-                str(s["gaps_1s"]),
-                str(s["gaps_2s"]),
-                f"{s['longest_s']:.1f}",
-            ]
+            [seq.name, info.frame_rate, info.length, f"{info.width}x{info.height}",
+             "moving" if seq.moving_camera else "static", s["ids"], s["boxes"],
+             _pct(s["low_vis"], s["boxes"]), _pct(s["truncated"], s["boxes"]),
+             s["gaps"], s["gaps_1s"], s["gaps_2s"], f"{s['longest_s']:.1f}"]
         )
         for key in total:
             total[key] += s[key]
         frames += info.length
         longest = max(longest, s["longest_s"])
-    rows.append(
-        [
-            "total",
-            "",
-            str(frames),
-            "",
-            "",
-            str(total["ids"]),
-            str(total["boxes"]),
-            _pct(total["low_vis"], total["boxes"]),
-            _pct(total["truncated"], total["boxes"]),
-            str(total["gaps"]),
-            str(total["gaps_1s"]),
-            str(total["gaps_2s"]),
-            f"{longest:.1f}",
-        ]
-    )
-    print(
-        f"Pedestrian targets. vis<{LOW_VISIBILITY}: share of boxes that are mostly hidden. "
-        f"Gaps: hidden (vis<{HIDDEN}) stretches after which the person is seen again.\n"
-    )
-    _print_table(
+    footer = [
+        ["total", "", frames, "", "", total["ids"], total["boxes"],
+         _pct(total["low_vis"], total["boxes"]), _pct(total["truncated"], total["boxes"]),
+         total["gaps"], total["gaps_1s"], total["gaps_2s"], f"{longest:.1f}"]
+    ]
+    return format_table(
         ["sequence", "fps", "frames", "size", "camera", "ids", "boxes",
-         f"vis<{LOW_VISIBILITY}", "past border", "gaps", ">1s", ">2s", "longest s"],
+         f"vis<{LOW_VISIBILITY}", "past border", "gaps", ">1 s", ">2 s", "longest s"],
         rows,
+        caption="MOT17 train, pedestrian targets",
+        footer=footer,
+        note=f"gaps: hidden stretches (vis<{HIDDEN}) that end with the person visible again",
     )
 
-    rows, total = [], dict.fromkeys(("train_ids", "val_ids", "shared_ids", "train_crops", "clean_crops", "noisy_crops"), 0)
+
+def _split_table(sequences: list[Sequence]) -> str:
+    keys = ("train_ids", "val_ids", "shared_ids", "train_crops", "clean_crops", "noisy_crops")
+    rows, total = [], dict.fromkeys(keys, 0)
+
+    def cells(name: str, s: dict) -> list[object]:
+        return [name, s["train_ids"], s["val_ids"], s["shared_ids"], s["train_crops"],
+                f"{s['clean_crops']} ({_pct(s['clean_crops'], s['train_crops'])})",
+                f"{s['noisy_crops']} ({_pct(s['noisy_crops'], s['train_crops'])})"]
+
     for seq in sequences:
         s = split_summary(seq)
-        rows.append(
-            [
-                seq.name,
-                str(s["train_ids"]),
-                str(s["val_ids"]),
-                str(s["shared_ids"]),
-                str(s["train_crops"]),
-                f"{s['clean_crops']} ({_pct(s['clean_crops'], s['train_crops'])})",
-                f"{s['noisy_crops']} ({_pct(s['noisy_crops'], s['train_crops'])})",
-            ]
-        )
-        for key in total:
+        rows.append(cells(seq.name, s))
+        for key in keys:
             total[key] += s[key]
-    rows.append(
-        [
-            "total",
-            str(total["train_ids"]),
-            str(total["val_ids"]),
-            str(total["shared_ids"]),
-            str(total["train_crops"]),
-            f"{total['clean_crops']} ({_pct(total['clean_crops'], total['train_crops'])})",
-            f"{total['noisy_crops']} ({_pct(total['noisy_crops'], total['train_crops'])})",
-        ]
-    )
-    print("Half split. Shared ids appear in both halves, so ReID scores on them are optimistic.\n")
-    _print_table(
+    return format_table(
         ["sequence", "train ids", "val ids", "shared", "train crops", f"vis>={CLEAN}", f"vis<{NOISY}"],
         rows,
+        caption="MOT17 half split",
+        footer=[cells("total", total)],
+        note="shared: ids in both halves; crop counts are for the train half",
     )
 
+
+def _detection_table(sequences: list[Sequence]) -> str:
     rows = []
     for detector in DETECTORS:
         scores = np.concatenate([seq.load_det(detector).score for seq in sequences])
-        rows.append([detector, str(len(scores)), f"{scores.min():.2f}", f"{scores.max():.2f}"])
-    print("Public detections on the training sequences. Score scales differ per detector.\n")
-    _print_table(["detector", "boxes", "min score", "max score"], rows)
+        rows.append([detector, len(scores), f"{scores.min():.2f}", f"{scores.max():.2f}"])
+    return format_table(["detector", "boxes", "min score", "max score"], rows, caption="MOT17 train, public detections")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m reidtrack.data.stats", description="Statistics for the prepared MOT17 training set."
+    )
+    parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
+    args = parser.parse_args(argv)
+    sequences = [s for s in Mot17(args.root).sequences("train") if s.has_gt]
+    print(_sequence_table(sequences), _split_table(sequences), _detection_table(sequences), sep="\n\n")
     return 0
 
 
