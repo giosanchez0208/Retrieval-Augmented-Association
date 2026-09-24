@@ -3,6 +3,8 @@ name = "reidtrack"
 version = "0.1.0"
 description = "Multi-person tracking with learned spatial-aware association and an identity bank."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Gio Sanchez" }]
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]

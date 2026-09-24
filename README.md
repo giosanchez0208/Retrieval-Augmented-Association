@@ -79,3 +79,7 @@ MOT17 is not part of this repository and remains under its own terms.
 ```bash
 uv run pytest
 ```
+
+## License
+
+Apache-2.0; see [LICENSE](LICENSE).
