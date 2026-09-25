@@ -21,11 +21,16 @@ class SameSceneSampler:
     positives span time instead of being near-duplicate neighbouring frames.
     """
 
-    def __init__(self, data: CropSet, people: int = 16, crops: int = 4, seed: int = 0) -> None:
+    def __init__(
+        self, data: CropSet, people: int = 16, crops: int = 4, seed: int = 0, sequences: set[int] | None = None
+    ) -> None:
+        """``sequences`` restricts sampling to those sequence indices (cross-fitting)."""
         self.people, self.crops = people, crops
         self.rng = np.random.default_rng(seed)
         ids = data.identities()
         order = np.lexsort((data.frame, ids))
+        if sequences is not None:
+            order = order[np.isin(data.sequence[order], sorted(sequences))]
         bounds = np.flatnonzero(np.diff(ids[order])) + 1
         self.tracks = [t for t in np.split(order, bounds) if len(t) >= 2]
         seq_of = np.array([data.sequence[t[0]] for t in self.tracks])
@@ -33,7 +38,8 @@ class SameSceneSampler:
         self.by_sequence = [t for t in self.by_sequence if len(t) >= 2]
         weights = np.array([len(t) for t in self.by_sequence], dtype=float)
         self.sequence_weights = weights / weights.sum()
-        self.batches_per_epoch = len(data) // (people * crops)
+        used = len(data) if sequences is None else sum(len(t) for t in self.tracks)
+        self.batches_per_epoch = used // (people * crops)
 
     def batch(self) -> np.ndarray:
         s = self.rng.choice(len(self.by_sequence), p=self.sequence_weights)

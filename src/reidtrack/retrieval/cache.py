@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--subset", choices=("train", "test"), default="train")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--sequences", default="", help="only these sequences, comma-separated")
     args = parser.parse_args(argv)
 
     import torch
@@ -54,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     sync = torch.cuda.synchronize if device == "cuda" else None
     model = args.model or args.weights.stem
     rows = []
+    chosen = {s for s in args.sequences.split(",") if s}
     for seq in Mot17(args.root).sequences(args.subset):
+        if chosen and seq.name not in chosen:
+            continue
         det = seq.load_det(args.det)
         bounds = np.searchsorted(det.frame, np.arange(1, seq.info.length + 2))
         features = np.zeros((len(det), embedder.dim), dtype=np.float16)

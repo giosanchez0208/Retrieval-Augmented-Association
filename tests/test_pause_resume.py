@@ -75,3 +75,15 @@ def test_a_pause_file_requests_a_pause(tmp_path):
     assert request
     request.close()
     assert not (tmp_path / "PAUSE").exists()
+
+
+def test_training_can_be_restricted_to_some_sequences(crops_root, tmp_path):
+    out = tmp_path / "weights"
+
+    assert trainer.main(args(crops_root, out, "--sequences", "MOT17-04", "--max-steps", "2")) == 0
+    assert trainer.main(args(crops_root, out, "--sequences", "MOT17-99")) == 1
+
+    import torch
+
+    state = torch.load(out / "run" / "last.pt", weights_only=True)
+    assert state["num_classes"] == 4  # only the four people of MOT17-04

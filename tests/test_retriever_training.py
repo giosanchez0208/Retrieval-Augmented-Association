@@ -74,3 +74,12 @@ def test_checkpoints_round_trip_through_the_embedder_loader(tmp_path):
 
     warm = build_model("osnet_x0_25", num_classes=3, init=str(path))
     assert warm.classifier.out_features == 3  # the classifier is re-initialised for the new people
+
+
+def test_the_sampler_can_be_restricted_to_some_sequences():
+    data = fake_crops()
+    sampler = SameSceneSampler(data, people=16, crops=4, seed=1, sequences={1})
+
+    for _ in range(5):
+        assert set(data.sequence[sampler.batch()].tolist()) == {1}
+    assert sampler.batches_per_epoch == (20 * 12) // 64

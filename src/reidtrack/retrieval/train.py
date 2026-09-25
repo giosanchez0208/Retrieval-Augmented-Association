@@ -77,7 +77,7 @@ def build_model(backbone: str, num_classes: int, init: str | None) -> ReIDModel:
 
 
 TRAINING_KEYS = ("backbone", "init", "epochs", "people", "crops", "lr", "weight_decay", "warmup", "margin",
-                 "eval_every", "max_steps", "seed")
+                 "eval_every", "max_steps", "seed", "sequences")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--score-only", action="store_true", help="score --init without training")
     parser.add_argument("--resume", action="store_true", help="continue a paused or interrupted run")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--sequences", default="", help="train only on these sequences, comma-separated (cross-fitting)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--out", type=Path, default=Path("data/weights/retriever"))
@@ -112,13 +113,21 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         saved = torch.load(resume_path, map_location="cpu", weights_only=True)
         for key in TRAINING_KEYS:  # a resumed run keeps its original schedule
-            setattr(args, key, saved["args"][key])
+            setattr(args, key, saved["args"].get(key, getattr(args, key)))
 
     torch.manual_seed(args.seed)
     train, val = load_crops(args.root, "train_half"), load_crops(args.root, "val_half")
     if train.names != val.names:
         raise ValueError("train and val crops list sequences in a different order")
-    classes, labels = np.unique(train.identities(), return_inverse=True)
+    chosen = [s for s in args.sequences.split(",") if s]
+    unknown = sorted(set(chosen) - set(train.names))
+    if unknown:
+        print(f"unknown sequences: {', '.join(unknown)}", file=sys.stderr)
+        return 1
+    allowed = np.isin(train.sequence, [train.names.index(s) for s in chosen]) if chosen else np.ones(len(train), bool)
+    classes, inverse = np.unique(train.identities()[allowed], return_inverse=True)
+    labels = np.full(len(train), -1, dtype=np.int64)
+    labels[allowed] = inverse
     seen = set(classes.tolist())
     device = args.device
     amp = device.startswith("cuda")
@@ -142,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
                            caption="Retrieval on unseen validation-half people"))
         return 0
 
-    sampler = SameSceneSampler(train, args.people, args.crops, seed=args.seed)
+    sampler = SameSceneSampler(train, args.people, args.crops, seed=args.seed,
+                               sequences={train.names.index(s) for s in chosen} if chosen else None)
     steps_per_epoch = sampler.batches_per_epoch
     total_steps = args.max_steps or args.epochs * steps_per_epoch
     warmup_steps = max(1, int(args.warmup * steps_per_epoch))
