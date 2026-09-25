@@ -179,16 +179,34 @@ Augmentations cover the camera problems I wanted the model to shrug off: brightn
 
 **The score.** I cut 11,555 crops of 305 people from every third frame of the validation half. Only people the model has never seen are used as queries, since 45% of validation people also appear in training (Phase 0). Each query searches for the same person among everyone else in its video, and I report mean average precision (mAP), meaning how high the right person's crops rank on average, and Rank-1, meaning how often the top result is the right person. Crops of the same person within a second of the query don't count, so near-identical neighboring frames can't inflate the score. Everything downstream uses the final checkpoint, not the best-scoring one, because picking by validation score would leak the validation half into the choice.
 
-| Model | Starts from | Parameters | mAP | Rank-1 | ms per MOT17-04 frame |
-|---|---|---|---|---|---|
-| OSNet x1.0, off the shelf | MSMT17 | 2.2 M | 71.2 | 80.8 | |
-| OSNet x1.0, fine-tuned | MSMT17 | 2.2 M | 77.9 | **88.1** | 21.9 |
-| OSNet x0.5, fine-tuned | MSMT17 | 0.6 M | **78.1** | **88.1** | 17.3 |
-| ResNet18, fine-tuned | ImageNet | 11.2 M | 75.5 | 86.6 | **10.3** |
+| Model | Starts from | Parameters | mAP | Rank-1 |
+|---|---|---|---|---|
+| OSNet x1.0, off the shelf | MSMT17 | 2.2 M | 71.2 | 80.8 |
+| OSNet x1.0, fine-tuned | MSMT17 | 2.2 M | 77.9 | **88.1** |
+| OSNet x0.5, fine-tuned | MSMT17 | 0.6 M | **78.1** | **88.1** |
+| ResNet18, fine-tuned | ImageNet | 11.2 M | 75.5 | 86.6 |
 
-Fine-tuning added **6.7 mAP** and **7.3 points of Rank-1** to OSNet x1.0 on people it never saw. OSNet x0.5 matched it with **a quarter of the parameters**, 78.1 against 77.9, a gap smaller than its own score moved over the last five epochs (77.5 to 78.1). ResNet18 finished 2.4 mAP behind, starting from ImageNet rather than a person dataset, but runs **2.1× faster** than OSNet x1.0.
+Fine-tuning added **6.7 mAP** and **7.3 points of Rank-1** to OSNet x1.0 on people it never saw. OSNet x0.5 matched it with **a quarter of the parameters**, 78.1 against 77.9, a gap smaller than its own score moved over the last five epochs (77.5 to 78.1). ResNet18 finished 2.4 mAP behind, starting from ImageNet rather than a person dataset.
 
-The times come from one embedding pass over the training videos, with no speed tuning, on MOT17-04's 27 people per frame. OSNet x0.5 takes 16 to 18 ms on every video no matter how crowded, which points at the cost of launching its many small layers rather than the math itself. Which model the tracker uses comes down to tracking accuracy per millisecond, which is next.
+### Choosing the model
+
+mAP only says how well a model finds people. What the tracker needs is how well it tracks and how long it takes. So I ran DeepSORT on the validation half with each model's features, and timed each model cropping and embedding every detection on the real validation frames.
+
+Each model gets its own DeepSORT cutoff, set without labels. Two detections in the same frame are always different people, so the cutoff is whatever lets through the same share of same-frame pairs, 0.118%, as DeepSORT's tuned 0.2 did with the off-the-shelf features.
+
+| Model | Cutoff | HOTA | AssA | IDF1 | ID switches | Embed, plain | Embed, graphed |
+|---|---|---|---|---|---|---|---|
+| OSNet x1.0 | 0.368 | **51.9** | **63.8** | **60.8** | **98** | 15.0 ms | 9.5 ms |
+| OSNet x0.5 | 0.375 | **51.9** | 63.7 | 60.6 | 102 | 13.9 ms | 5.4 ms |
+| ResNet18 | 0.312 | 51.5 | 62.8 | 59.9 | 106 | **5.2 ms** | 5.9 ms |
+
+(Embedding time is per validation frame, averaged over all seven videos, cropping included. *Graphed* means replayed as a CUDA graph: NVIDIA's Compute Unified Device Architecture records the model's GPU work once and replays it as a single launch.)
+
+**OSNet x0.5 it is.** It tracks as well as OSNet x1.0, 51.9 HOTA each, at 5.4 ms against 9.5 ms, **1.8× faster**. ResNet18 is 0.2 ms faster still, but gives up 0.4 HOTA, 0.9 AssA, and 4 more ID switches against x0.5.
+
+The graphs are doing more work than it looks. Without them, x0.5 takes 13.9 ms, because at these batch sizes its time goes into launching its many small layers, not into the math. ResNet18 gets nothing from them, 5.2 ms plain against 5.9 ms graphed, since padding each frame's crops up to a fixed batch size costs more than the launches it saves.
+
+Each model was trained once, and 0.4 HOTA is a small gap. The choice doesn't hinge on it, though: x0.5 and x1.0 tie on accuracy, and at equal accuracy the faster model wins.
 
 ### Cross-fitting
 
@@ -247,9 +265,11 @@ Each model is scored on the people *it* never saw, which is a different set for 
 
 **What it changed.** With cross-fit features, the association step's held-out check reads **98.0** average precision (93.2% precision, 96.8% recall) instead of a suspicious 100.
 
+The folds so far are OSNet x1.0's. With OSNet x0.5 chosen above, it needs a pair of its own.
+
 ## Usage
 
-Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0 (Compute Unified Device Architecture, NVIDIA's GPU platform).
+Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0.
 
 ```bash
 uv sync
