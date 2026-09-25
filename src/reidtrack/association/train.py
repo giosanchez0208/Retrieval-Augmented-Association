@@ -129,14 +129,18 @@ def train(cues: np.ndarray, labels: np.ndarray, epochs: int, batch: int = 8192, 
     return model.eval()
 
 
-def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-3, seed: int = 0):
-    """Train ``AxialReranker`` on whole frames, so each pair is scored among its competitors."""
-    from reidtrack.association.reranker import AxialReranker
+def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-3, seed: int = 0, device: str = "cpu"):
+    """Train ``AxialReranker`` on whole frames, so each pair is scored among its competitors.
+
+    Frames are padded into batches of ``frames_per_step``; padding is masked out of the
+    attention and the loss.
+    """
+    from reidtrack.association.reranker import AxialReranker, pad_frames
 
     torch.manual_seed(seed)
-    model = AxialReranker()
+    model = AxialReranker().to(device)
     rate = np.concatenate([y.reshape(-1) for _, y, _ in frames]).mean()
-    pos_weight = torch.tensor((1 - rate) / max(rate, 1e-9))
+    pos_weight = torch.tensor((1 - rate) / max(rate, 1e-9), device=device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     rng = np.random.default_rng(seed)
     data = [(torch.from_numpy(c.astype(np.float32)), torch.from_numpy(y.astype(np.float32))) for c, y, _ in frames]
@@ -144,14 +148,15 @@ def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-
     for _ in range(epochs):
         order = rng.permutation(len(data))
         for i in range(0, len(order), frames_per_step):
-            loss = sum(
-                F.binary_cross_entropy_with_logits(model.forward(data[k][0]), data[k][1], pos_weight=pos_weight)
-                for k in order[i : i + frames_per_step]
-            ) / frames_per_step
+            cues, labels, entry_pad, det_pad, valid = (
+                t.to(device) for t in pad_frames([data[k] for k in order[i : i + frames_per_step]])
+            )
+            logits = model(cues, entry_pad, det_pad)
+            loss = F.binary_cross_entropy_with_logits(logits[valid], labels[valid], pos_weight=pos_weight)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-    return model.eval()
+    return model.cpu().eval()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", choices=("pairwise", "context"), default="pairwise",
                         help="pairwise: each pair alone; context: pairs attend to their competitors")
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--device", default="cpu", help="the context model trains faster on cuda")
     parser.add_argument("--collect-only", action="store_true", help="only record pairs and report their statistics")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--out", type=Path, default=Path("data/weights/reranker"))
@@ -184,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
                          np.concatenate([y.reshape(-1) for _, y, _ in fs]), args.epochs)
     else:
         def fit(fs):
-            return train_context(fs, args.epochs)
+            return train_context(fs, args.epochs, device=args.device)
     probe = fit(kept)
     held_prob = np.concatenate([probe(c).reshape(-1) for c, _, _ in held])
     held_labels = np.concatenate([y.reshape(-1) for _, y, _ in held])

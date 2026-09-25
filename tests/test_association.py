@@ -60,3 +60,21 @@ def test_a_tracker_with_a_reranker_follows_a_walking_person():
     ids = [tracker.update(np.array([[400.0 + 5 * i, 300, 460 + 5 * i, 460]]), np.array([0.9]), f)[0].tolist()
            for i in range(20)]
     assert all(frame == [1] for frame in ids)
+
+
+def test_padded_batches_score_like_single_frames():
+    import torch
+
+    from reidtrack.association.reranker import AxialReranker, pad_frames
+
+    torch.manual_seed(0)
+    model = AxialReranker().eval()
+    a = (torch.randn(5, 3, len(NAMES)), torch.zeros(5, 3))
+    b = (torch.randn(2, 7, len(NAMES)), torch.zeros(2, 7))
+    cues, _, entry_pad, det_pad, valid = pad_frames([a, b])
+
+    with torch.inference_mode():
+        batched = model(cues, entry_pad, det_pad)
+        torch.testing.assert_close(batched[0, :5, :3], model(a[0]), atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(batched[1, :2, :7], model(b[0]), atol=1e-5, rtol=1e-5)
+    assert int(valid.sum()) == 5 * 3 + 2 * 7

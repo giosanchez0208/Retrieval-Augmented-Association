@@ -25,13 +25,14 @@ class PairwiseReranker(nn.Module):
         """Logits, shape (..., 1) -> (...)."""
         return self.net(cues).squeeze(-1)
 
-    @torch.inference_mode()
-    def __call__(self, cues: np.ndarray | torch.Tensor):  # type: ignore[override]
+    def __call__(self, cues: np.ndarray | torch.Tensor, *args, **kwargs):  # type: ignore[override]
+        """NumPy cues -> probabilities (used by the tracker); tensors -> logits as usual."""
         if isinstance(cues, np.ndarray):
             if cues.size == 0:
                 return np.zeros(cues.shape[:-1], dtype=np.float32)
-            return torch.sigmoid(self.forward(torch.from_numpy(cues))).numpy()
-        return super().__call__(cues)
+            with torch.inference_mode():
+                return torch.sigmoid(self.forward(torch.from_numpy(cues))).numpy()
+        return super().__call__(cues, *args, **kwargs)
 
     def save(self, path: str | Path, **extra) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -53,11 +54,15 @@ class AxialBlock(nn.Module):
         self.ffn = nn.Sequential(nn.Linear(dim, 2 * dim), nn.ReLU(), nn.Linear(2 * dim, dim))
         self.norms = nn.ModuleList(nn.LayerNorm(dim) for _ in range(3))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (N, M, dim)
-        h = self.norms[0](x)
-        x = x + self.row(h, h, h, need_weights=False)[0]
-        h = self.norms[1](x).transpose(0, 1)
-        x = x + self.col(h, h, h, need_weights=False)[0].transpose(0, 1)
+    def forward(self, x: torch.Tensor, entry_pad: torch.Tensor, det_pad: torch.Tensor) -> torch.Tensor:
+        """x (B, N, M, dim); ``entry_pad`` (B, N) and ``det_pad`` (B, M) mark padding."""
+        b, n, m, d = x.shape
+        h = self.norms[0](x).reshape(b * n, m, d)
+        mask = det_pad[:, None, :].expand(b, n, m).reshape(b * n, m)
+        x = x + self.row(h, h, h, key_padding_mask=mask, need_weights=False)[0].reshape(b, n, m, d)
+        h = self.norms[1](x).transpose(1, 2).reshape(b * m, n, d)
+        mask = entry_pad[:, None, :].expand(b, m, n).reshape(b * m, n)
+        x = x + self.col(h, h, h, key_padding_mask=mask, need_weights=False)[0].reshape(b, m, n, d).transpose(1, 2)
         return x + self.ffn(self.norms[2](x))
 
 
@@ -75,12 +80,44 @@ class AxialReranker(PairwiseReranker):
         self.blocks = nn.ModuleList(AxialBlock(dim, heads) for _ in range(layers))
         self.head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
 
-    def forward(self, cues: torch.Tensor) -> torch.Tensor:
-        """One frame of cues (N, M, C) -> logits (N, M)."""
+    def forward(
+        self, cues: torch.Tensor, entry_pad: torch.Tensor | None = None, det_pad: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Cues (N, M, C) for one frame, or (B, N, M, C) padded frames with their padding
+        masks -> logits of the same leading shape."""
+        single = cues.dim() == 3
+        if single:
+            cues = cues[None]
+        b, n, m, _ = cues.shape
+        if entry_pad is None:
+            entry_pad = torch.zeros(b, n, dtype=torch.bool, device=cues.device)
+            det_pad = torch.zeros(b, m, dtype=torch.bool, device=cues.device)
         x = self.embed(cues)
         for block in self.blocks:
-            x = block(x)
-        return self.head(x).squeeze(-1)
+            x = block(x, entry_pad, det_pad)
+        logits = self.head(x).squeeze(-1)
+        return logits[0] if single else logits
+
+
+def pad_frames(frames: list[tuple[torch.Tensor, torch.Tensor]]):
+    """Stack frames of (cues (N, M, C), labels (N, M)) with padding.
+
+    Returns cues (B, N, M, C), labels (B, N, M), entry_pad (B, N), det_pad (B, M), valid (B, N, M).
+    """
+    n = max(c.shape[0] for c, _ in frames)
+    m = max(c.shape[1] for c, _ in frames)
+    b, k = len(frames), frames[0][0].shape[-1]
+    cues = torch.zeros(b, n, m, k)
+    labels = torch.zeros(b, n, m)
+    entry_pad = torch.ones(b, n, dtype=torch.bool)
+    det_pad = torch.ones(b, m, dtype=torch.bool)
+    for i, (c, y) in enumerate(frames):
+        cues[i, : c.shape[0], : c.shape[1]] = c
+        labels[i, : y.shape[0], : y.shape[1]] = y
+        entry_pad[i, : c.shape[0]] = False
+        det_pad[i, : c.shape[1]] = False
+    valid = ~entry_pad[:, :, None] & ~det_pad[:, None, :]
+    return cues, labels, entry_pad, det_pad, valid
 
 
 def load_reranker(path: str | Path) -> nn.Module:

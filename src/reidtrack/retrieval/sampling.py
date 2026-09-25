@@ -46,26 +46,37 @@ class SameSceneSampler:
             out += [track[self.rng.choice(part)] if len(part) else track[self.rng.integers(len(track))] for part in stretches]
         return np.array(out)
 
-    def __iter__(self) -> Iterator[np.ndarray]:
-        for _ in range(self.batches_per_epoch):
+    def take(self, batches: int) -> Iterator[np.ndarray]:
+        for _ in range(batches):
             yield self.batch()
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        return self.take(self.batches_per_epoch)
 
 
 class Prefetcher:
-    """Reads (images, labels) batches from the memory-mapped crops in a thread."""
+    """Reads (images, labels) batches from the memory-mapped crops in a thread.
 
-    def __init__(self, data: CropSet, sampler: SameSceneSampler, labels: np.ndarray, depth: int = 4) -> None:
+    ``batches`` defaults to one epoch; a resumed run asks for what is left of one.
+    """
+
+    def __init__(
+        self, data: CropSet, sampler: SameSceneSampler, labels: np.ndarray, depth: int = 4, batches: int | None = None
+    ) -> None:
         self.data, self.sampler, self.labels = data, sampler, labels
+        self.batches = sampler.batches_per_epoch if batches is None else batches
+        self.pin = torch.cuda.is_available()
         self.queue: queue.Queue = queue.Queue(maxsize=depth)
         self.thread = threading.Thread(target=self._fill, daemon=True)
         self.thread.start()
 
     def _fill(self) -> None:
-        for idx in self.sampler:
+        for idx in self.sampler.take(self.batches):
             order = np.argsort(idx)  # sorted reads are friendlier to the memory map
             images = np.empty((len(idx), *self.data.images.shape[1:]), dtype=np.uint8)
             images[order] = self.data.images[idx[order]]
-            self.queue.put((torch.from_numpy(images).pin_memory(), torch.from_numpy(self.labels[idx])))
+            images_t = torch.from_numpy(images)
+            self.queue.put((images_t.pin_memory() if self.pin else images_t, torch.from_numpy(self.labels[idx])))
         self.queue.put(None)
 
     def __iter__(self):
