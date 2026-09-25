@@ -2,43 +2,64 @@
 
 <!-- Lead with the current output: a sample, then the demo. Write once the project is done. -->
 
-This project builds on a presentation my groupmates, Mark Gallardo and Caine Bautista, and I delivered at the 8th Collaborative Online International Learning (COIL) Conference. Our approach at the time scored each pair of people (one from the current frame, one from the next) in isolation. When following one person, the best-scoring match decided which person in the next frame, if any, was the tracked one; when tracking everyone, the scores went through Hungarian matching[^kuhn]. Attention mixed three inputs per pair: a learnable summary token, the difference between the two people's appearance embeddings, and their element-wise product. The summary token's output was combined with spatial and temporal features (position offsets, overlap, scale, time gap) to produce a match score.
-
-I wanted to improve this by matching everyone at once. Instead of scoring pairs in isolation, the model looks at every person in the current frame and every detection in the new frame together, so one match can inform another, with the spatial features from the previous project guiding it.
-
-Trackers also tend to lose people who stay hidden for more than a moment. In MOT17 alone, 47 of 587 occlusions last longer than two seconds[^stats], well past ByteTrack's default wait of one second[^bytetrack]. When a person loses their detection, whether behind an obstacle or off-screen, they go into a bank that remembers their appearance and last known state. The bank also decides how long each entry is kept before the person is considered gone.
-
-The same bank lets the tracker re-identify people who leave the frame and come back. MOT17 gives returning people new IDs[^mot16], so this can't be scored on it directly. Instead, it is tested by simulating exits.
-
-My approach follows this structure:
-
 ```mermaid
 flowchart LR
-    A["Current frame<br/>detections, labeled"] --> M["Association"]
-    B["Next frame<br/>detections, unlabeled"] --> M
-    K[("Bank")] --> M
-    M --> C["Next frame<br/>detections, labeled"]
-    M --> K
+    C["Current frame<br/>people, labeled"] --> K[("Bank<br/>everyone seen so far")]
+    N["Next frame"] --> D["Detector"]
+    D -- boxes --> E["Embedder"]
+    E -- a vector per box --> M["Association"]
+    K -- candidates --> M
+    M --> L["Next frame<br/>people, labeled"]
+    M -- updates --> K
 ```
 
-Every result below is on the MOT17 validation half, using the same public FRCNN detections for every tracker, unless a table says otherwise.
+*The tracker, one frame at a time.*
 
-## Phase 0: Preparing the dataset
+This project builds on a presentation my groupmates, Mark Gallardo and Caine Bautista, and I delivered at the 8th Collaborative Online International Learning (COIL) Conference. Our approach at the time scored each pair of people, one from the current frame and one from the next, in isolation. When following one person, the best-scoring match decided which person in the next frame, if any, was the tracked one. When tracking everyone, the scores went through Hungarian matching[^kuhn]. Attention mixed three inputs per pair: a learnable summary token, the difference between the two people's appearance embeddings, and their element-wise product. The summary token's output was combined with spatial and temporal features (position offsets, overlap, scale, time gap) to produce a match score.
 
-This project uses [MOT17](https://motchallenge.net/data/MOT17/)[^mot16]. Before anything else, the data was cleaned:
+Scoring pairs in isolation has a blind spot: **one match can't inform another.** So I wanted to match everyone at once, with the spatial features from the original project guiding it.
 
-- **Triplicate sequences.** MOT17 ships every sequence three times, once per public detector (DPM, FRCNN, SDP), with identical images and ground truth. All 14 sequences were verified identical by content hash and collapsed into one copy, with the three detection files side by side. This saves 3.9 GB and rules out a subtle leak: splitting train and validation by detector folder would put the same video on both sides.
-- **Unsorted detections.** Some detection files are out of frame order (246 rows in MOT17-02's FRCNN file), so every file is sorted on load.
-- **Mixed formats.** DPM detections have ten columns and unbounded scores (−0.5 to 4.77); FRCNN and SDP have seven columns and scores in [0, 1]. They are parsed into one format, and score thresholds are set per detector.
-- **Coordinates.** MOT boxes are 1-based `left, top, width, height`. They are converted to 0-based corners internally and back when writing results.
-- **Boxes past the frame.** 14.6% of pedestrian boxes extend beyond the image border[^stats], so boxes are clipped before cropping.
-- **What gets scored.** Only pedestrians marked for evaluation are used as targets. Static people, people on vehicles and reflections are ignored, following the benchmark's rules[^mot16].
-- **Hidden people.** People stay annotated while fully occluded, so their crops show whoever is in front. 18.9% of training crops have visibility below 0.2[^stats], and these are left out when training the appearance model.
-- **Split.** Each training sequence is cut in time: the first half for training, the second for validation. This follows CenterTrack's convention[^centertrack], so results stay comparable with published work.
+Trackers also tend to lose people who stay hidden for more than a moment. In the training videos of MOT17, the 2017 Multiple Object Tracking benchmark[^mot16], 47 of the 587 occlusions last longer than two seconds[^stats], twice ByteTrack's default wait of one second[^bytetrack]. So when a person loses their detection, whether behind an obstacle or off-screen, they go into a **bank** that remembers their appearance and last known state, and decides how long to keep them before calling them gone. The same bank lets the tracker re-identify people who leave the frame and come back.
 
-### What the data looks like
+Every result below is on the MOT17 validation half (Phase 0 explains the split), with the same public detections for every tracker, unless a table says otherwise. Those detections come from the Faster Region-based Convolutional Neural Network (Faster R-CNN)[^fasterrcnn], labeled FRCNN in MOT17's files.
 
-Before designing anything, I measured how often people actually disappear. A *gap* is a stretch where someone's visibility drops below 0.1 and later comes back.
+## Phase 0: The dataset
+
+### Where it comes from
+
+I use [MOT17](https://motchallenge.net/data/MOT17/)[^mot16], the standard benchmark for tracking pedestrians. It has 14 short videos of pedestrian scenes, some from static cameras and some filmed while walking or driving. Seven are for training and come with ground truth: every person is boxed in every frame, with an identity number (ID) and a visibility score from 0 to 1 for how much of them is showing. The other seven are the test set, with no public ground truth.
+
+### What it looked like, and what I fixed
+
+Before running a single evaluation, I went through the release and found seven problems:
+
+| Found | Fixed |
+|---|---|
+| Every video shipped three times, once per public detector: Deformable Part Models (DPM)[^dpm], FRCNN, and Scale-Dependent Pooling (SDP)[^sdp]. Images and ground truth are identical across the copies | Verified all 14 by content hash and collapsed them into one copy, with the three detection files side by side. That saves 3.9 GB and closes a quiet leak: split by detector folder, and the same video lands in both training and validation |
+| Detection files out of frame order, including 246 rows in MOT17-02's FRCNN file | Sorted on load |
+| DPM uses ten columns and unbounded scores (−0.5 to 4.77); FRCNN and SDP use seven, with scores between 0 and 1 | One parser for all three, with a score threshold per detector |
+| Boxes as 1-based `left, top, width, height` | 0-based corners internally, converted back when writing results |
+| 14.6% of pedestrian boxes, about one in seven, extend past the image border | Clipped before cropping |
+| Static people, people on vehicles, and reflections labeled next to pedestrians | Only pedestrians marked for evaluation count as targets, following the benchmark rules[^mot16] |
+| People stay annotated while fully hidden, so their crops show whatever is in front of them. Nearly one training crop in five (18.9%) has visibility below 0.2 | Kept out of the appearance model's training data |
+
+Last, I cut each training video in time: the first half for training, the second for validation, which I'll call the training half and the validation half. This is CenterTrack's convention[^centertrack], which keeps the results comparable with published work. The test videos stay untouched.
+
+### What it looks like now
+
+```
+data/mot17/
+├── manifest.json       per video: frame rate, size, moving camera or not, split boundaries
+├── train/MOT17-02/     one copy of each of the 7 training videos
+│   ├── img1/           frames
+│   ├── det/            DPM.txt, FRCNN.txt, SDP.txt
+│   ├── gt/gt.txt
+│   └── seqinfo.ini
+├── test/               the 7 test videos, same layout, no ground truth
+└── trackeval/          ground truth per split, in the format the scorer reads
+```
+
+In the table below, FPS is frames per second. A *gap* is a stretch where a person's visibility drops below 0.1 and later recovers, and "mostly hidden" is the share of boxes with visibility below 0.25.
 
 | Sequence | FPS | Frames | Size | Camera | People | Boxes | Mostly hidden | Past border | Gaps | > 1 s | > 2 s | Longest |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -51,59 +72,51 @@ Before designing anything, I measured how often people actually disappear. A *ga
 | MOT17-13 | 25 | 750 | 1920×1080 | moving | 110 | 11,642 | 13.9% | 3.5% | 96 | 1 | 0 | 1.4 s |
 | **Total** | | **5,316** | | | **546** | **112,297** | **23.6%** | **14.6%** | **587** | **110** | **47** | **11.0 s** |
 
-"Mostly hidden" is the share of boxes below 25% visibility. Three things shaped the design:
-- Almost a quarter of all boxes are mostly hidden.
-- The frame rate varies, so every time limit in the tracker is in seconds, not frames.
-- Four of the seven cameras move.
+Three numbers shaped everything after this:
 
-When I split each sequence in half, I also found that 152 of the 339 people in the validation half also appear in the training half. So whenever I score the appearance model on its own, I only use the people it has never seen.
+- **Nearly a quarter of all boxes are mostly hidden**, and on MOT17-02 it's half.
+- **Frame rates range from 14 to 30 FPS**, so every time limit is in seconds, not frames.
+- **Four of the seven cameras move.**
 
-<details>
-<summary>The split, per sequence</summary>
+One more is worth knowing: **152 of the 339 people in the validation half, 45%, also appear in the training half.** An appearance model could simply memorize them, and Phase 2 has to account for that.
 
-| Sequence | People (train half) | People (val half) | In both | Training crops | Visibility ≥ 0.3 | Visibility < 0.2 |
-|---|---|---|---|---|---|---|
-| MOT17-02 | 42 | 53 | 33 | 8,701 | 4,627 (53.2%) | 3,577 (41.1%) |
-| MOT17-04 | 62 | 69 | 48 | 23,379 | 18,459 (79.0%) | 2,662 (11.4%) |
-| MOT17-05 | 68 | 71 | 6 | 3,560 | 2,212 (62.1%) | 1,150 (32.3%) |
-| MOT17-09 | 17 | 22 | 13 | 2,446 | 1,719 (70.3%) | 657 (26.9%) |
-| MOT17-10 | 44 | 36 | 23 | 6,916 | 5,371 (77.7%) | 1,269 (18.3%) |
-| MOT17-11 | 41 | 44 | 10 | 4,919 | 3,988 (81.1%) | 687 (14.0%) |
-| MOT17-13 | 85 | 44 | 19 | 8,486 | 6,892 (81.2%) | 1,053 (12.4%) |
-| **Total** | **359** | **339** | **152** | **58,407** | **43,268 (74.1%)** | **11,055 (18.9%)** |
+## Phase 1: Baselines
 
-</details>
+### Why a baseline
 
-<details>
-<summary>The public detections</summary>
+A tracking score means little on its own. The same tracker scores differently with different detections, splits, and scorers, and published results mostly come from each paper's own detector, so they can't be lined up against mine. So I built my own reference points: three standard trackers, run under exactly the conditions my tracker will face.
 
-| Detector | Boxes (train) | Lowest score | Highest score |
-|---|---|---|---|
-| DPM | 79,790 | −0.50 | 4.77 |
-| FRCNN | 67,639 | 0.05 | 1.00 |
-| SDP | 82,787 | 0.40 | 1.00 |
+- **SORT**[^sort], short for Simple Online and Realtime Tracking, matches people by motion only.
+- **ByteTrack**[^bytetrack] adds a second pass that recovers low-confidence detections.
+- **DeepSORT**[^deepsort] adds an appearance memory. Here it uses the Omni-Scale Network (OSNet)[^osnet], trained on the Multi-Scene Multi-Time person dataset (MSMT17)[^msmt17]. It looks up the closest-looking person and stores every sighting, which makes it the simplest version of the bank.
 
-</details>
+### Running them under the same conditions
 
-### Checking the scorer
+- **Same detections.** Every tracker gets the public FRCNN boxes, so detection quality is fixed and any difference comes from association, meaning deciding which box belongs to whom.
+- **Tuned on one half, scored on the other.** Every threshold was tuned on the training half and reported on the validation half, so no number was tuned on the data it's scored on.
+- **Same code path.** I reimplemented all three from their papers, so they share one data loader, one runner, and one scorer. That also keeps this repository Apache-2.0, since the original SORT and DeepSORT code is under the GNU General Public License (GPL).
 
-Before trusting any number, I checked the evaluation itself. The cleaned ground truth, scored as if it were tracker output, gets a perfect 100 in HOTA[^hota], MOTA[^clear] and IDF1[^idf1] with zero ID switches on every split. To make sure a perfect score isn't free, I also scored detections with no tracking at all, where every box gets a new ID:
+**A scorer I checked first.** Scoring uses TrackEval[^hota], which reports these:
+
+| Metric | Stands for | Measures |
+|---|---|---|
+| HOTA | Higher Order Tracking Accuracy[^hota] | detection and association together, by combining the next two |
+| DetA | Detection Accuracy | how well people are found and placed |
+| AssA | Association Accuracy | how well each person keeps one ID over time |
+| MOTA | Multiple Object Tracking Accuracy[^clear] | misses, false alarms, and ID switches in one number, dominated by detection |
+| IDF1 | Identification F1 score[^idf1] | how many boxes carry the right ID |
+| ID switches | | how often a person's ID changes; the only one where lower is better |
+
+A perfect score only means something if a bad tracker can't get one. So I scored two extremes: the cleaned ground truth as if it were tracker output, and the raw detections with no tracking at all, a new ID for every box.
 
 | Output | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
 |---|---|---|---|---|---|---|
 | Ground truth | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | 0 |
 | FRCNN detections, no tracking | 5.0 | 43.6 | 0.6 | −0.7 | 0.7 | 26,306 |
 
-Detection accuracy stays at 43.6 but association accuracy collapses, so the scorer really measures who is who.
+The ground truth gets a perfect 100. The untracked detections keep a DetA of 43.6 while AssA falls to **0.6**: the scorer punishes lost identities without touching detection.
 
-## Phase 1: Baselines
-
-Before building anything new, I needed numbers to beat. I reimplemented three standard trackers from their papers and ran them on the same public FRCNN detections:
-- SORT[^sort] only uses motion.
-- ByteTrack[^bytetrack] also gives low-confidence detections a second chance.
-- DeepSORT[^deepsort] adds an appearance memory using OSNet[^osnet] embeddings trained on MSMT17[^msmt17].
-
-Thresholds were tuned on the training half and results reported on the validation half, so no number here was tuned on the data it was scored on.
+The baselines on the validation half:
 
 | Tracker | HOTA | AssA | IDF1 | ID switches | Matching time |
 |---|---|---|---|---|---|
@@ -111,303 +124,132 @@ Thresholds were tuned on the training half and results reported on the validatio
 | ByteTrack | 49.4 | 57.7 | 56.2 | 198 | 0.79 ms/frame |
 | DeepSORT + OSNet | **51.3** | **62.6** | **59.9** | **121** | 1.83 ms/frame |
 
-<details>
-<summary>Tuning on the training half</summary>
+DeepSORT makes **39% fewer ID switches** than ByteTrack, 121 against 198, and scores 1.9 HOTA higher. **It's the bar to clear.**
 
-SORT and ByteTrack barely care about the detection threshold, so ByteTrack keeps its published default (0.6). DeepSORT is sensitive to how different two looks may be before it refuses a match (the cosine limit): loosening it from 0.2 to 0.4 costs about 3 HOTA.
+### How my tracker will be measured against them
 
-| Tracker | Setting | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
-|---|---|---|---|---|---|---|---|
-| SORT | min score 0.3 | 49.8 | 45.4 | 54.9 | 50.0 | 55.5 | 346 |
-| SORT | min score 0.5 | 49.9 | 45.1 | 55.4 | 49.9 | 55.8 | 317 |
-| SORT | min score 0.7 | 49.8 | 44.9 | 55.6 | 49.7 | 55.7 | 292 |
-| SORT | min score 0.9 | 49.6 | 44.3 | 55.8 | 49.1 | 55.3 | 224 |
-| ByteTrack | track threshold 0.4 | 52.2 | 46.2 | 59.2 | 51.3 | 59.6 | 345 |
-| ByteTrack | track threshold 0.5 | 52.0 | 46.1 | 59.1 | 51.3 | 59.5 | 323 |
-| ByteTrack | track threshold 0.6 | 52.1 | 46.1 | 59.3 | 51.4 | 59.6 | 308 |
-| ByteTrack | track threshold 0.7 | 52.0 | 45.9 | 59.1 | 51.4 | 59.6 | 285 |
-| ByteTrack | track threshold 0.8 | 51.9 | 45.5 | 59.5 | 51.3 | 59.3 | 239 |
-| DeepSORT | min score 0.3, cosine 0.2 | 53.3 | 46.1 | 61.9 | 51.1 | 62.1 | 231 |
-| DeepSORT | min score 0.3, cosine 0.3 | 52.8 | 46.1 | 60.8 | 51.1 | 61.2 | 243 |
-| DeepSORT | min score 0.3, cosine 0.4 | 50.7 | 46.1 | 56.2 | 50.9 | 56.8 | 312 |
-| DeepSORT | min score 0.5, cosine 0.2 | 53.3 | 45.9 | 62.2 | 51.1 | 62.2 | 199 |
-| DeepSORT | min score 0.5, cosine 0.3 | 52.9 | 46.0 | 61.0 | 51.4 | 61.3 | 205 |
-| DeepSORT | min score 0.5, cosine 0.4 | 50.4 | 46.0 | 55.6 | 51.1 | 56.6 | 283 |
-| DeepSORT | min score 0.7, cosine 0.2 | 53.0 | 45.6 | 61.9 | 51.0 | 61.9 | 177 |
-| DeepSORT | min score 0.7, cosine 0.3 | 52.8 | 45.8 | 61.2 | 51.3 | 61.1 | 161 |
-| DeepSORT | min score 0.7, cosine 0.4 | 50.0 | 45.7 | 55.0 | 51.2 | 55.8 | 241 |
+- **HOTA first**, since it's the one number that covers both detection and association. With the detections fixed, DetA should barely move, so the differences will show up in **AssA**, **IDF1**, and **ID switches**.
+- **Same features.** Whenever the appearance model changes, DeepSORT gets the same one, so a win can't come from better features alone.
+- **Every part against its plain version.** Each part of my tracker has a simpler counterpart in DeepSORT, and it has to beat that counterpart on the validation half to stay.
+- **Repeated runs.** Anything learned is trained more than once and reported as mean ± standard deviation.
+- **Time.** The budget is 33 ms per frame, 30 frames per second, on my laptop's RTX 4050, so matching time is reported next to accuracy.
 
-</details>
+## Phase 2: The appearance model
 
-A few things stood out:
+### Where it fits
 
-- **Remembering people pays off most where they get hidden.** ByteTrack's biggest gain was on MOT17-02, the most occluded sequence, where association accuracy went up by 10.5 points.
-- **Motion alone falls apart when the camera moves.** Both motion-only trackers struggled on MOT17-10, filmed from a moving camera at night.
-- **Appearance helps a lot.** DeepSORT cut ID switches by 39% compared to ByteTrack and gained 9.4 HOTA on MOT17-11, another moving-camera sequence. DeepSORT's memory is the simplest version of what I'm building: it looks up the closest-looking person and stores everything. That makes it the bar my approach has to clear.
+```mermaid
+flowchart LR
+    C["Current frame<br/>people, labeled"] --> K[("Bank<br/>everyone seen so far")]
+    N["Next frame"] --> D["Detector"]
+    D -- boxes --> E["<b>Embedder</b>"]
+    E -- a vector per box --> M["Association"]
+    K -- candidates --> M
+    M --> L["Next frame<br/>people, labeled"]
+    M -- updates --> K
+    classDef focus stroke-width:3px,font-weight:bold
+    class E focus
+```
 
-### Where the time goes
+The embedder is the appearance model this phase trains. It crops each detected box out of the frame and turns it into a vector of 512 numbers. For now the detector is MOT17's public FRCNN boxes, and the bank and association come later.
 
-Since this is meant to run in real time (30 FPS, or 33 ms per frame), I also measured where the time goes on my laptop's RTX 4050.
+### What it does
 
-- **Decoding the frame.** A 1080p frame takes 9.8 ms to decode on the CPU, about a third of the budget. Decoding it on the GPU with nvjpeg takes 4.0 ms and leaves the frame on the GPU, ready for the next step.
-- **Matching is cheap.** Every tracker above takes under 2 ms per frame.
-- **The appearance model is the expensive part.** OSNet takes about 14 ms even for a single crop, because most of that time goes into launching its many small layers rather than computing. Recording the model as a CUDA graph and replaying it cut 8 crops from 15.7 ms to 5.2 ms, with identical outputs. Past 32 crops, OSNet's depthwise convolutions become the bottleneck, so a low FLOP count doesn't guarantee low latency on a GPU. I'll pick the appearance model by measured time, not by FLOPs.
+The COIL version compared people inside a model: attention over each pair's embedding difference and product. That's one model run per pair, and the number of pairs grows with the square of the crowd. So this phase moves the comparing into training instead. **The appearance model turns each crop into a vector once, and comparing two people is a single dot product**, their cosine similarity. It's trained so crops of the same person land close together and different people land far apart.
 
-| Decoder (MOT17-04, 1920×1080) | Read | Decode | Upload to GPU | Total | FPS |
-|---|---|---|---|---|---|
-| OpenCV, full resolution | 0.31 ms | 7.95 ms | 1.49 ms | 9.78 ms | 102 |
-| OpenCV, half resolution | 0.23 ms | 3.85 ms | 0.42 ms | 4.52 ms | 221 |
-| nvjpeg on the GPU | 0.24 ms | 3.73 ms | – | 3.98 ms | 251 |
+| | Per frame, with N new boxes and M known people |
+|---|---|
+| A model on every pair | N × M model runs |
+| An embedding per crop | N model runs, then N × M dot products |
 
-## Phase 2: Fine-tuning the appearance model
+On MOT17-04, with about 27 people in every frame, that's roughly 729 model runs against 27, 27× fewer.
 
-The OSNet in DeepSORT was trained on MSMT17, which is a different set of cameras and people from MOT17. So the next step was to teach an appearance model what "the same person" looks like in these videos.
+### How it's trained
 
-### Cutting the crops
+**The candidates.** I trained three: OSNet x1.0, the full-width model, as the accuracy reference, and two faster ones, OSNet x0.5 (half the channels) and ResNet18, an 18-layer residual network[^resnet]. I timed every candidate before training any of them, and ResNet18 surprised me. It does twice the arithmetic per crop of OSNet x1.0 and still ran faster at every batch size I tried, because the graphics processor (GPU) is built for its dense convolutions.
 
-I cut a crop of every visible pedestrian in the training half, using the exact same GPU cropping the tracker uses, so training and tracking see identical pixels. Looking through the crops showed a problem the visibility filter doesn't catch. Some crops were just legs, from people mostly outside the frame. MOT17's visibility field counts occlusion by other people but ignores the image border.
+**The crops.** I cut a crop of every visible pedestrian (visibility at least 0.3) in the training half, with the same GPU cropping the tracker uses, so training and tracking see identical pixels. Scrolling through them turned up crops that were just legs. The cause: MOT17's visibility score counts occlusion by other people but ignores the image border, so someone half outside the frame can still read as fully visible. Dropping anyone less than 60% inside the frame removed 1,290 crops, 3.0% of them, and left **41,978 crops of 325 people**.
 
-| Sequence | Crops (visibility ≥ 0.3) | Less than 60% inside the frame | Less than 90% inside |
-|---|---|---|---|
-| MOT17-02 | 4,627 | 9 (0.2%) | 19 (0.4%) |
-| MOT17-04 | 18,459 | 987 (5.3%) | 2,537 (13.7%) |
-| MOT17-05 | 2,212 | 79 (3.6%) | 583 (26.4%) |
-| MOT17-09 | 1,719 | 61 (3.5%) | 175 (10.2%) |
-| MOT17-10 | 5,371 | 53 (1.0%) | 195 (3.6%) |
-| MOT17-11 | 3,988 | 51 (1.3%) | 166 (4.2%) |
-| MOT17-13 | 6,892 | 50 (0.7%) | 115 (1.7%) |
-| **Total** | **43,268** | **1,290 (3.0%)** | **3,790 (8.8%)** |
-
-After dropping anyone less than 60% inside the frame, I had 41,978 training crops of 325 people. For scoring, I cut 11,555 crops of 305 people from every third frame of the validation half.
-
-### Choosing a model by speed first
-
-Since the appearance model is the expensive part, I timed every candidate before training any of them. The weights don't affect speed, so random ones were enough.
-
-| Model | Parameters | GMACs per crop | 8 crops | 8, graphed | 16 crops | 16, graphed | 32 crops | 32, graphed |
-|---|---|---|---|---|---|---|---|---|
-| OSNet x1.0 | 2.2 M | 0.98 | 14.8 ms | 5.2 ms | 12.2 ms | 9.1 ms | 20.4 ms | 18.8 ms |
-| OSNet x0.5 | 0.6 M | 0.27 | 13.4 ms | 2.8 ms | 12.7 ms | 4.2 ms | 13.6 ms | 9.1 ms |
-| OSNet x0.25 | 0.2 M | 0.08 | 13.3 ms | 2.8 ms | 17.7 ms | 2.6 ms | 14.2 ms | 5.2 ms |
-| ResNet18 | 11.2 M | 1.99 | 2.9 ms | 2.8 ms | 5.2 ms | 5.1 ms | 10.3 ms | 9.4 ms |
-| ResNet34 | 21.3 M | 3.65 | 4.8 ms | 4.7 ms | 8.5 ms | 8.1 ms | 15.4 ms | 15.1 ms |
-
-(fp16, 256×128 crops, channels-last memory layout, RTX 4050 Laptop.)
-
-The most surprising result: ResNet18[^resnet] does twice as much arithmetic per crop as OSNet x1.0 but runs three to five times faster, because the GPU is built for its dense convolutions. The smaller OSNets only become fast once they're replayed as CUDA graphs. I kept OSNet x1.0 as the accuracy reference and ResNet18 and OSNet x0.5 as the speed candidates.
-
-I also hit a trap while setting up training. The channels-last memory layout, which usually speeds up half-precision work, made training steps over six times slower on this GPU, while making inference slightly faster. So training uses the default layout and inference uses channels-last.
-
-| Model (batch of 64) | Default layout, fp16 | Default layout, fp32 | Channels-last, fp16 | Channels-last, fp32 |
-|---|---|---|---|---|
-| OSNet x1.0 | 181 ms | 336 ms | 1,151 ms | 1,532 ms |
-| OSNet x0.5 | 82 ms | 155 ms | 497 ms | 636 ms |
-| ResNet18 | 85 ms | 159 ms | 257 ms | 355 ms |
-
-### Training
-
-Training follows the standard recipe from *Bag of Tricks*[^bagoftricks]: an identity classifier with label smoothing plus a triplet loss[^triplet] that pulls each person's least similar crop closer than their most similar stranger. I changed two things for tracking:
+**The recipe.** Training follows *Bag of Tricks*[^bagoftricks]: an identity classifier with label smoothing, plus a triplet loss[^triplet] that pulls each person's least similar crop closer than their most similar stranger. I changed two things for tracking:
 
 - **Every batch comes from one video.** Sixteen people from the same sequence share its lighting and background, which are exactly the look-alikes the tracker has to tell apart.
-- **Each person's four crops come from four different stretches of their track.** Matching across time is harder than matching neighbouring frames, and it's what the bank needs.
+- **Each person's four crops come from four different stretches of their track.** Matching across time is harder than matching neighboring frames, and it's what the bank needs.
 
-The augmentations cover the camera problems I wanted the model to shrug off: brightness, contrast, saturation and warmth changes, a lighting change across part of the crop, random erasing[^erasing] for partial blocking, plus flips and small shifts.
+Augmentations cover the camera problems I wanted the model to shrug off: brightness, contrast, saturation, and warmth changes, a lighting change across part of the crop, random erasing[^erasing] for partial blocking, plus flips and small shifts.
 
-I score the model on how well it finds each unseen validation person among everyone else in the same video (mAP and Rank-1). Crops of the same person within a second of the query don't count, so near-identical neighbouring frames can't inflate the score. Training can be paused and resumed at any point.
+**The score.** I cut 11,555 crops of 305 people from every third frame of the validation half. Only people the model has never seen are used as queries, since 45% of validation people also appear in training (Phase 0). Each query searches for the same person among everyone else in its video, and I report mean average precision (mAP), meaning how high the right person's crops rank on average, and Rank-1, meaning how often the top result is the right person. Crops of the same person within a second of the query don't count, so near-identical neighboring frames can't inflate the score. Everything downstream uses the final checkpoint, not the best-scoring one, because picking by validation score would leak the validation half into the choice.
 
-| OSNet x1.0 | mAP | Rank-1 |
-|---|---|---|
-| Off the shelf (MSMT17) | 71.2 | 80.8 |
-| After 5 epochs | 74.5 | 85.1 |
-| After 10 epochs | 74.8 | 86.7 |
-| After 15 epochs | 76.5 | 88.1 |
-| After 20 epochs | 77.3 | 87.3 |
-| After 25 epochs | 78.1 | 88.3 |
-| After 30 epochs (final) | 77.9 | 88.1 |
-
-Fine-tuning on MOT17 added 6.7 mAP and 7.3 points of Rank-1 on people the model never saw. The score levelled off over the last five epochs as the learning rate wound down. The tracker uses the final model, not the best-scoring checkpoint, because picking by validation score would leak the validation half into the choice.
-
-### Better features need a new ruler
-
-When I plugged the fine-tuned model into DeepSORT, tracking got *worse*, even though the model was better at finding people. The ruler was the problem, not the model. DeepSORT refuses a match when two looks are more than 0.2 apart (cosine distance), and that cutoff was tuned for the old model. Fine-tuning pushed different people much further apart, but it also spread each person's own looks out a little, so the old cutoff threw away a third of the correct matches.
-
-| Features | Same person, median distance | Different people, median | Same-person pairs under 0.2 | Same-person pairs kept at a 1% false-accept rate |
-|---|---|---|---|---|
-| Off the shelf (MSMT17) | 0.105 | 0.513 | 82.5% | 94.6% |
-| Fine-tuned (MOT17) | 0.149 | 0.900 | 67.1% | 95.6% |
-
-(Pairs of detections up to one second apart in the validation half.)
-
-To pick a fair cutoff without peeking at the labels, I relied on a simple fact: two detections in the same frame are always different people. The distances between them show what "different people" looks like in a given video, so a cutoff can be set to let only a chosen share of those pairs through. I carried DeepSORT's tuned setting over this way instead of re-tuning it on the validation half. With the old features, the 0.2 cutoff lets 0.118% of same-frame pairs through on the training half. The fine-tuned model gets the cutoff that does the same on the video it's tracking.
-
-| DeepSORT | Cutoff | HOTA | AssA | IDF1 | ID switches |
+| Model | Starts from | Parameters | mAP | Rank-1 | ms per MOT17-04 frame |
 |---|---|---|---|---|---|
-| Off-the-shelf features | 0.2 (tuned) | 51.3 | 62.6 | 59.9 | 121 |
-| Fine-tuned features, same cutoff | 0.2 | 50.7 | 61.3 | 59.3 | 145 |
-| Fine-tuned features, calibrated | 0.368 | 51.9 | 63.8 | 60.8 | 98 |
+| OSNet x1.0, off the shelf | MSMT17 | 2.2 M | 71.2 | 80.8 | |
+| OSNet x1.0, fine-tuned | MSMT17 | 2.2 M | 77.9 | **88.1** | 21.9 |
+| OSNet x0.5, fine-tuned | MSMT17 | 0.6 M | **78.1** | **88.1** | 17.3 |
+| ResNet18, fine-tuned | ImageNet | 11.2 M | 75.5 | 86.6 | **10.3** |
 
-With the ruler fixed, the fine-tuned model cut ID switches by 19%. This also turned up a warning. Calibrated on the training half, the fine-tuned model's cutoff balloons to 0.635, because the people it trained on are pushed apart more than anyone else will be. A model has to be calibrated on the video it's tracking, never on its own training data.
+Fine-tuning added **6.7 mAP** and **7.3 points of Rank-1** to OSNet x1.0 on people it never saw. OSNet x0.5 matched it with **a quarter of the parameters**, 78.1 against 77.9, a gap smaller than its own score moved over the last five epochs (77.5 to 78.1). ResNet18 finished 2.4 mAP behind, starting from ImageNet rather than a person dataset, but runs **2.1× faster** than OSNet x1.0.
 
-*ResNet18 and OSNet x0.5 are still training.*
+The times come from one embedding pass over the training videos, with no speed tuning, on MOT17-04's 27 people per frame. OSNet x0.5 takes 16 to 18 ms on every video no matter how crowded, which points at the cost of launching its many small layers rather than the math itself. Which model the tracker uses comes down to tracking accuracy per millisecond, which is next.
 
-## Phase 3: My tracker
+### Cross-fitting
 
-This is where the bank comes in. Every person the tracker knows about is an entry in the bank, with:
-- a motion estimate (a Kalman filter);
-- a running average of their appearance, plus a few distinct views of them;
-- a state: *active* (seen last frame), *occluded* (lost somewhere inside the frame), *exited* (last seen at the edge, walking out), or *tentative* (new and unconfirmed).
+```mermaid
+flowchart LR
+    subgraph T["Training half"]
+        A["Fold A videos<br/>MOT17-04, 05, 11"]
+        B["Fold B videos<br/>MOT17-02, 09, 10, 13"]
+    end
+    A -- trains --> MA["Model A"]
+    B -- trains --> MB["Model B"]
+    B -. embedded by .-> MA
+    A -. embedded by .-> MB
+    MA --> X["Cross-fit features<br/>all 7 videos, every person unseen"]
+    MB --> X
+    X -- trains --> S["Association<br/>learned, Phase 3"]
+    T -- trains --> F["Full model"]
+    V["Validation half"] -. embedded by .-> F
+    F -- test features --> S
+```
 
-Each frame, the tracker:
-1. **Retrieves** likely candidates from the bank for every detection.
-2. **Scores** the pairs.
-3. **Matches** everyone in one assignment, and can decide a detection is a new person.
-4. **Writes** back only clean sightings: confident, and not overlapped by someone else.
-5. **Forgets** entries that have been gone too long for their state.
+This is the part I'd point at first.
 
-### First version: hand-set rules
+**Why it's needed.** The association step is learned too. It looks at pairs of a known person and a new box, and learns from the training half how far to trust appearance similarity against position and timing. So it needs appearance vectors for the training half, and the obvious source is the fine-tuned model. That's the problem: the fine-tuned model trained on every person in the training half. I measured what its features look like on those same people:
 
-I started with matching rules I set by hand, so everything around them could be tested first. The first attempt only trusted appearance when a detection overlapped the person's predicted box, the rule BoT-SORT[^botsort] uses. It did well on some videos and badly on moving-camera ones. BoT-SORT gets away with it because it compensates for camera motion first. Letting appearance count anywhere the motion model says is plausible fixed most of that.
-
-| Version (training half) | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
-|---|---|---|---|---|---|---|
-| Appearance only near the prediction | 52.5 | 46.2 | 60.1 | 51.6 | 59.7 | 263 |
-| Appearance within the motion gate, limit 0.10 | 52.8 | 46.2 | 60.7 | 51.6 | 60.2 | 252 |
-| Appearance within the motion gate, limit 0.15 | 52.9 | 46.2 | 60.9 | 51.6 | 60.4 | 250 |
-| Appearance within the motion gate, limit 0.20 | 52.8 | 46.2 | 60.6 | 51.6 | 60.2 | 233 |
-| Limit 0.15, lower score thresholds | 52.8 | 46.3 | 60.6 | 51.6 | 60.2 | 277 |
-
-Then I tested the bank's design choices one at a time:
-
-| Bank variant (training half) | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
-|---|---|---|---|---|---|---|
-| Write gate, 4 stored views | 52.9 | 46.2 | 60.9 | 51.6 | 60.4 | 250 |
-| No write gate (store every match) | 52.9 | 46.2 | 60.9 | 51.6 | 60.6 | 250 |
-| 16 stored views | 52.5 | 46.2 | 60.0 | 51.6 | 59.7 | 242 |
-| 16 stored views, no write gate | 52.7 | 46.2 | 60.3 | 51.6 | 60.0 | 237 |
-| Keep hidden people for 3 s | 52.9 | 46.2 | 61.0 | 51.7 | 60.5 | 254 |
-| Keep hidden people for 5 s | 53.0 | 46.3 | 61.0 | 51.7 | 60.4 | 250 |
-| Looser recall limit (0.25) | 51.8 | 46.2 | 58.5 | 51.6 | 58.3 | 250 |
-
-- **A few distinct views beat many.** Every extra stored view is another chance to match the wrong person, so 4 views beat 16.
-- **A looser recall limit brings back the wrong people.**
-- **The write gate made no difference with these features.** I'm keeping it, but it hasn't earned its place yet.
-
-### Compensating for camera motion
-
-Four of the cameras move, so I estimated how each frame shifts relative to the last and moved every bank entry with it, as BoT-SORT[^botsort] does.
-
-| Sequence | Camera | Average shift per frame | Largest shift | Estimation time |
+| Training-half features made by | Fold A videos | Fold B videos | All seven, mAP | All seven, Rank-1 |
 |---|---|---|---|---|
-| MOT17-02 | static | 0.21 px | 0.8 px | 23.8 ms |
-| MOT17-04 | static | 0.19 px | 0.6 px | 24.3 ms |
-| MOT17-05 | moving | 5.37 px | 42.8 px | 5.8 ms |
-| MOT17-09 | static | 0.40 px | 4.5 px | 23.6 ms |
-| MOT17-10 | moving | 4.95 px | 31.6 px | 24.9 ms |
-| MOT17-11 | moving | 4.82 px | 17.2 px | 24.7 ms |
-| MOT17-13 | moving | 12.81 px | 53.0 px | 24.3 ms |
+| OSNet x1.0 off the shelf, never saw MOT17 | 79.6 | 60.1 | 71.1 | 85.4 |
+| Full fine-tuned model, trained on these people | **100.0** | **100.0** | **100.0** | **100.0** |
+| Cross-fit, each video embedded by the other fold's model | 76.4 | 63.3 | 70.7 | 87.6 |
 
-| Camera compensation (training half) | HOTA | DetA | AssA | MOTA | IDF1 | ID switches | MOT17-05 | MOT17-10 | MOT17-11 | MOT17-13 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Off | 53.0 | 46.3 | 61.0 | 51.7 | 60.4 | 250 | 40.1 | 45.6 | 59.9 | 45.9 |
-| On | 52.9 | 46.4 | 60.6 | 51.8 | 60.4 | 200 | 40.2 | 46.5 | 59.2 | 45.1 |
+(mAP unless marked; same scoring rules as above, with every person in the training half as a query.)
 
-(The last four columns are HOTA on the moving-camera sequences.)
+**A perfect 100.** On the people it trained on, the full model practically never ranks a stranger above the right person. On new people it scores 77.9. An association step trained on those features would learn that appearance is never wrong, and then meet appearance that's wrong a fair share of the time. I found this the hard way: a matcher trained on them scored a perfect 100 average precision on its own held-out check. That's a leak, not a result.
 
-The result was mixed. ID switches dropped by 20%, but HOTA didn't move. MOT17-13 is filmed from a vehicle, and its perspective changes more than a simple shift, rotation and zoom can describe. Compensation stays available, but off by default.
+The cross-fit features score **70.7** on the same people, a little below the 77.9 the full model reaches on new people. Each fold model trained on about half the data, so its features are slightly worse than the ones used at test time. That errs on the safe side: the association step learns to trust appearance a bit less than it could, rather than more. (The training-half crops are every frame and the validation ones every third frame, so the 70.7 and 77.9 are only roughly comparable.)
 
-### Learning the matching
+**What I did.**
 
-The hand-set rules levelled off at about DeepSORT's level. So instead of tuning them further, I let a small network learn how to weigh the evidence. For every candidate pair of bank entry and detection, it sees:
-- how similar they look (best view and running average);
-- the spatial features from the original project, measured against where the person should be now (overlap, offsets, scale, corner offsets);
-- how plausible the position is to the motion model;
-- how long the person has been gone, their state, the detection's confidence, and how crowded the detection is.
+1. Split the seven training videos into two folds by video. Each training video is a different scene, so no person lands in both folds, and each fold mixes static and moving cameras.
+2. Trained one OSNet x1.0 per fold, with the full model's exact recipe and starting weights, on that fold's training-half crops only. They took 39 and 30 minutes, 69 in total, exactly as long as the full model took on its own.
+3. Had each fold model embed every detection in the *other* fold's videos, and saved both halves into one shared set of features covering all seven videos.
+4. The association step trains on those features. When tracking the validation half, it gets the full model's features instead.
 
-To train it, I ran the hand-set tracker over the training half and recorded every pair it considered: 850,028 pairs, 30,001 of them the same person. That way the network learns from the situations the tracker actually gets into, including its own mistakes[^learningtotrack]. On two sequences held out from its training, it recognises same-person pairs with 97.5 average precision (87.9% precision, 99.8% recall).
+The fold models have that one job. They aren't candidates for the tracker, and nothing is merged, averaged, or distilled from them. OSNet x0.5 and ResNet18 in the table above were trained separately, the same way as the full model.
 
-<details>
-<summary>Choosing the acceptance threshold (training half)</summary>
+**How the fold models perform.** On unseen validation people:
 
-The tracker accepts a match only when the network is confident enough, and otherwise treats the detection as a new person.
-
-| Accept above | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
-|---|---|---|---|---|---|---|
-| 0.3 | 54.3 | 46.3 | 63.8 | 51.7 | 63.8 | 185 |
-| 0.5 | 54.6 | 46.4 | 64.6 | 51.8 | 64.3 | 169 |
-| 0.7 | 54.1 | 46.4 | 63.4 | 51.7 | 63.5 | 186 |
-| 0.9 | 53.0 | 46.2 | 61.1 | 51.5 | 61.7 | 236 |
-
-These are optimistic, since the network was trained on this half. The validation half below is the honest test.
-
-</details>
-
-On the validation half, with identical detections and identical OSNet features, the learned matching beats every baseline:
-
-| Tracker | HOTA | AssA | IDF1 | ID switches | Matching time |
-|---|---|---|---|---|---|
-| SORT | 48.4 | 56.2 | 54.5 | 222 | 0.53 ms/frame |
-| ByteTrack | 49.4 | 57.7 | 56.2 | 198 | 0.79 ms/frame |
-| Mine, hand-set rules | 50.2 | 59.2 | 56.1 | 142 | 3.0 ms/frame |
-| DeepSORT | 51.3 | 62.6 | 59.9 | 121 | 1.83 ms/frame |
-| **Mine, learned matching** | **52.0 ± 0.3** | **63.5 ± 0.6** | **60.6 ± 0.4** | 105–124 | 4.0 ms/frame |
-
-The learned row is the mean ± standard deviation over three training runs:
-
-| Training run | HOTA | DetA | AssA | MOTA | IDF1 | ID switches |
-|---|---|---|---|---|---|---|
-| 1 | 52.3 | 42.8 | 64.2 | 47.8 | 61.2 | 110 |
-| 2 | 52.0 | 42.8 | 63.4 | 47.7 | 60.6 | 124 |
-| 3 | 51.7 | 42.8 | 62.8 | 47.8 | 60.1 | 105 |
-
-<details>
-<summary>HOTA per sequence</summary>
-
-| Tracker | MOT17-02 | MOT17-04 | MOT17-05 | MOT17-09 | MOT17-10 | MOT17-11 | MOT17-13 | Combined |
-|---|---|---|---|---|---|---|---|---|
-| SORT | 29.5 | 54.2 | 43.6 | 48.9 | 49.8 | 47.9 | 50.3 | 48.4 |
-| ByteTrack | 34.4 | 54.6 | 44.1 | 50.9 | 48.9 | 48.6 | 53.0 | 49.4 |
-| Mine, hand-set rules | 35.8 | 54.9 | 43.4 | 50.6 | 51.1 | 50.4 | 54.1 | 50.2 |
-| DeepSORT | 36.3 | 55.6 | 46.8 | 51.6 | 50.6 | 58.0 | 52.0 | 51.3 |
-| Mine, learned (run 1) | 37.7 | 56.0 | 46.0 | 53.2 | 53.6 | 58.4 | 55.4 | 52.3 |
-
-</details>
-
-It wins on six of the seven videos, most on MOT17-10 and MOT17-13, the two moving-camera ones at night and from a vehicle. The edge over DeepSORT is real but modest, about two standard deviations. I'm not calling it a clear win until the fine-tuned appearance model and the next steps are in. Matching takes 4.0 ms per frame; batching the motion checks across all entries brought that down from 5.7 ms without changing a single result.
-
-### The fine-tuned features, and a leak
-
-Retrained on the fine-tuned features, the learned matching reached **53.0 HOTA, 65.7 AssA and 62.5 IDF1**, the best so far. But it also made 142 ID switches, more than calibrated DeepSORT's 98, and scored a perfect 100 on its held-out check.
-
-That's a leak. The appearance model had already seen every person in the training half, so the matching learned from appearance that looked flawless there, and it over-trusts appearance on new people.
-
-Two cheap fixes didn't work:
-- **Giving the matcher each distance as a rank** against the same-frame pairs (the calibration trick above) changed nothing: 52.9 HOTA.
-- **Training a matcher only on those ranks,** using the old features, didn't carry over to the new ones: 51.6.
-
-The rank fixes the scale, but not how far appearance can be trusted.
-
-The proper fix is cross-fitting. Two extra appearance models are each trained on part of the training videos (04, 05 and 11; then 02, 09, 10 and 13), and each embeds the videos it didn't see. That way the matching only ever learns from features of people the appearance model has never met, which is the situation it faces when tracking. The two halves reached 73.1 and 79.5 mAP on people they hadn't seen.
-
-With cross-fitting, the held-out check stopped being suspiciously perfect: 98.0 average precision, with 93.2% precision and 96.8% recall. On the validation half, over three training runs each:
-
-| Learned matching, fine-tuned features, trained on | HOTA | AssA | IDF1 | ID switches |
+| Model | Trained on | Embeds | mAP | Rank-1 |
 |---|---|---|---|---|
-| Leaked features | 52.9 ± 0.1 | 65.6 ± 0.2 | 62.6 ± 0.1 | 141 (113–155) |
-| **Cross-fit features** | 52.7 ± 0.1 | 65.2 ± 0.1 | 62.0 ± 0.2 | **107 (102–114)** |
-| DeepSORT, calibrated (for reference) | 51.9 | 63.8 | 60.8 | 98 |
+| Fold A | MOT17-04, 05, 11 | MOT17-02, 09, 10, 13 | 73.1 | 84.6 |
+| Fold B | MOT17-02, 09, 10, 13 | MOT17-04, 05, 11 | 79.5 | 90.3 |
+| Full | all seven | the validation half, at test time | 77.9 | 88.1 |
 
-Cross-fitting gives up 0.2 HOTA but removes a quarter of the ID switches, and it's the version that isn't learning from leaked information, so it's the one I keep. Both beat calibrated DeepSORT by about a point of HOTA and a point and a half of AssA. ID switches are now close to DeepSORT's, though still slightly above.
+Each model is scored on the people *it* never saw, which is a different set for each, so these three rows can't be compared with each other. They only show that each model learned something. The training-half table is the fairer comparison, and there neither fold model is consistently better than the off-the-shelf one: model B scores 3.2 mAP below it on fold A's videos, and model A scores 3.2 above it on fold B's. That suggests three or four scenes of training don't carry far into scenes a model has never seen.
 
-### Next
-
-- Pick an appearance model by accuracy per millisecond (ResNet18 and OSNet x0.5 are still training).
-- Let each detection's score see its competitors (the context model), so one match can inform another.
-- Learn when to forget someone instead of using a fixed time.
-- Test re-entry with simulated exits, and report predicted boxes for hidden people.
+**What it changed.** With cross-fit features, the association step's held-out check reads **98.0** average precision (93.2% precision, 96.8% recall) instead of a suspicious 100.
 
 ## Usage
 
-Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0.
+Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0 (Compute Unified Device Architecture, NVIDIA's GPU platform).
 
 ```bash
 uv sync
@@ -424,38 +266,40 @@ uv run python -m reidtrack.data.stats --root data/mot17
 
 `prepare` verifies and deduplicates the release into `data/mot17` and exports the splits for evaluation. It writes nothing if the copies differ. Afterwards `MOT17/` can be deleted. `stats` prints the per-sequence figures quoted above. MOT17 is not part of this repository and remains under its own terms.
 
-### Appearance model
+### Baselines
 
 ```bash
 uv run python -m reidtrack.retrieval.cache --weights data/weights/osnet_x1_0_msmt17.pth
+uv run python -m reidtrack.baselines sort --min-score 0.5
+uv run python -m reidtrack.baselines bytetrack
+uv run python -m reidtrack.baselines deepsort --min-score 0.5 --max-cosine 0.2
+```
+
+`cache` embeds every public detection with OSNet[^osnet] and stores the vectors under `data/mot17/cache/`. The MSMT17-trained weights come from the torchreid model zoo[^torchreid]. `baselines` runs my reimplementations of SORT[^sort], ByteTrack[^bytetrack] and DeepSORT[^deepsort]. Results and scores go to `runs/<name>/`.
+
+### Appearance model
+
+```bash
 uv run python -m reidtrack.retrieval.crops --split train_half
 uv run python -m reidtrack.retrieval.crops --split val_half --stride 3
 uv run python -m reidtrack.retrieval.bench
 uv run python -m reidtrack.retrieval.train --backbone osnet_x1_0 --init data/weights/osnet_x1_0_msmt17.pth
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_mot17/last.pt --model osnet_x1_0_mot17
 ```
 
-- **`cache`** embeds every public detection with OSNet[^osnet] and stores the vectors under `data/mot17/cache/`. The MSMT17-trained weights come from the torchreid model zoo[^torchreid].
 - **`crops`** cuts the training and scoring crops.
 - **`bench`** times candidate models.
 - **`train`** fine-tunes one. Press Ctrl+C, or create a file named `PAUSE` in its run folder, to pause; run the same command with `--resume` to continue.
+- **`cache`** embeds every detection with the fine-tuned model.
 
-### Tracking
+Cross-fitting trains one model per fold and has each embed the other fold into a shared cache:
 
 ```bash
-uv run python -m reidtrack.baselines sort --min-score 0.5
-uv run python -m reidtrack.baselines bytetrack
-uv run python -m reidtrack.baselines deepsort --min-score 0.5 --max-cosine 0.2
-uv run python -m reidtrack.track.camera
-uv run python -m reidtrack.association.train --embeddings osnet_x1_0_msmt17
-uv run python -m reidtrack --reranker data/weights/reranker/pairwise_osnet_x1_0_msmt17.pt
+uv run python -m reidtrack.retrieval.train --init data/weights/osnet_x1_0_msmt17.pth --name osnet_x1_0_foldA --sequences MOT17-04,MOT17-05,MOT17-11
+uv run python -m reidtrack.retrieval.train --init data/weights/osnet_x1_0_msmt17.pth --name osnet_x1_0_foldB --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_foldA/last.pt --model osnet_x1_0_crossfit --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_foldB/last.pt --model osnet_x1_0_crossfit --sequences MOT17-04,MOT17-05,MOT17-11
 ```
-
-- **`baselines`** runs my reimplementations of SORT[^sort], ByteTrack[^bytetrack] and DeepSORT[^deepsort].
-- **`track.camera`** caches camera motion.
-- **`association.train`** records candidate pairs and trains the learned matching.
-- **`python -m reidtrack`** runs my tracker. Add `--camera` for camera compensation, and `--set key=value` to change any setting.
-
-Results and scores go to `runs/<name>/`.
 
 ### Evaluation
 
@@ -466,7 +310,7 @@ uv run python -m reidtrack.eval --oracle
 
 Result files are one `<sequence>.txt` per sequence in MOT format, using the sequence's own frame numbers; rows outside the split are ignored. Scoring uses TrackEval[^hota]. `--oracle` scores the ground truth itself and must report 100.
 
-### Visualisation
+### Visualization
 
 ```bash
 uv run python -m reidtrack.viz MOT17-02 --gt --split val_half --scale 0.5
@@ -497,6 +341,9 @@ Apache-2.0; see [LICENSE](LICENSE). `src/reidtrack/retrieval/osnet.py` is adapte
 [^stats]: Measured on the MOT17 training set with `python -m reidtrack.data.stats`. An occlusion here is a stretch in which a person's visibility drops below 0.1 and later recovers.
 [^bytetrack]: Y. Zhang et al. ByteTrack: Multi-Object Tracking by Associating Every Detection Box. *ECCV*, 2022. [arXiv:2110.06864](https://arxiv.org/abs/2110.06864). The reference implementation keeps a lost track for 30 frames (`track_buffer`), scaled to the frame rate.
 [^mot16]: A. Milan, L. Leal-Taixé, I. Reid, S. Roth, K. Schindler. MOT16: A Benchmark for Multi-Object Tracking. [arXiv:1603.00831](https://arxiv.org/abs/1603.00831), 2016. Annotation rules in §2; evaluation classes in §4.
+[^fasterrcnn]: S. Ren, K. He, R. Girshick, J. Sun. Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks. *NeurIPS*, 2015. [arXiv:1506.01497](https://arxiv.org/abs/1506.01497).
+[^dpm]: P. F. Felzenszwalb, R. B. Girshick, D. McAllester, D. Ramanan. Object Detection with Discriminatively Trained Part-Based Models. *IEEE TPAMI*, 32(9):1627–1645, 2010.
+[^sdp]: F. Yang, W. Choi, Y. Lin. Exploit All the Layers: Fast and Accurate CNN Object Detector with Scale Dependent Pooling and Cascaded Rejection Classifiers. *CVPR*, 2016.
 [^centertrack]: X. Zhou, V. Koltun, P. Krähenbühl. Tracking Objects as Points. *ECCV*, 2020. [arXiv:2004.01177](https://arxiv.org/abs/2004.01177).
 [^hota]: J. Luiten et al. HOTA: A Higher Order Metric for Evaluating Multi-Object Tracking. *IJCV*, 2021. [arXiv:2009.07736](https://arxiv.org/abs/2009.07736). Computed with [TrackEval](https://github.com/JonathonLuiten/TrackEval).
 [^clear]: K. Bernardin, R. Stiefelhagen. Evaluating Multiple Object Tracking Performance: The CLEAR MOT Metrics. *EURASIP Journal on Image and Video Processing*, 2008.
@@ -510,5 +357,3 @@ Apache-2.0; see [LICENSE](LICENSE). `src/reidtrack/retrieval/osnet.py` is adapte
 [^bagoftricks]: H. Luo, Y. Gu, X. Liao, S. Lai, W. Jiang. Bag of Tricks and A Strong Baseline for Deep Person Re-identification. *CVPR Workshops*, 2019. [arXiv:1903.07071](https://arxiv.org/abs/1903.07071).
 [^triplet]: A. Hermans, L. Beyer, B. Leibe. In Defense of the Triplet Loss for Person Re-Identification. [arXiv:1703.07737](https://arxiv.org/abs/1703.07737), 2017.
 [^erasing]: Z. Zhong, L. Zheng, G. Kang, S. Li, Y. Yang. Random Erasing Data Augmentation. *AAAI*, 2020. [arXiv:1708.04896](https://arxiv.org/abs/1708.04896).
-[^botsort]: N. Aharon, R. Orfaig, B.-Z. Bobrovsky. BoT-SORT: Robust Associations Multi-Pedestrian Tracking. [arXiv:2206.14651](https://arxiv.org/abs/2206.14651), 2022.
-[^learningtotrack]: Y. Xiang, A. Alahi, S. Savarese. Learning to Track: Online Multi-Object Tracking by Decision Making. *ICCV*, 2015.
