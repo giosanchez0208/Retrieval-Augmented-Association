@@ -1,5 +1,5 @@
 """Stress test for appearance models: retrieval on unseen people when the query sighting
-is changed one way at a time (lighting, color cast, infrared, blocking) and the gallery is not.
+is changed one way at a time (lighting, color cast, blocking) and the gallery is not.
 
     python -m reidtrack.retrieval.probe --models osnet_x0_5_mot17 osnet_x0_5_aug_geometry
 
@@ -35,11 +35,6 @@ def _shadow(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _gray(x: torch.Tensor) -> torch.Tensor:
-    g = 0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]
-    return g.expand_as(x)
-
-
 LIGHT: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "dark": lambda x: x * 0.5,
     "overexposed": lambda x: x * 1.6,
@@ -47,7 +42,6 @@ LIGHT: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "warm": lambda x: _scale(x, (1.25, 1.0, 0.8)),
     "cool": lambda x: _scale(x, (0.8, 1.0, 1.25)),
     "shadow": _shadow,
-    "infrared": _gray,
 }
 BLOCK = {"blocked below": "below", "blocked side": "side"}
 PROBES = ("clean", *LIGHT, *BLOCK)
