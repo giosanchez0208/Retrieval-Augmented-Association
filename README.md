@@ -227,7 +227,28 @@ I score the model on how well it finds each unseen validation person among every
 
 Fine-tuning on MOT17 added 6.7 mAP and 7.3 points of Rank-1 on people the model never saw. The score levelled off over the last five epochs as the learning rate wound down. The tracker uses the final model, not the best-scoring checkpoint, because picking by validation score would leak the validation half into the choice.
 
-*ResNet18 and OSNet x0.5 are training next, and the fine-tuned model's effect on tracking comes after.*
+### Better features need a new ruler
+
+When I plugged the fine-tuned model into DeepSORT, tracking got *worse*, even though the model was better at finding people. The ruler was the problem, not the model. DeepSORT refuses a match when two looks are more than 0.2 apart (cosine distance), and that cutoff was tuned for the old model. Fine-tuning pushed different people much further apart, but it also spread each person's own looks out a little, so the old cutoff threw away a third of the correct matches.
+
+| Features | Same person, median distance | Different people, median | Same-person pairs under 0.2 | Same-person pairs kept at a 1% false-accept rate |
+|---|---|---|---|---|
+| Off the shelf (MSMT17) | 0.105 | 0.513 | 82.5% | 94.6% |
+| Fine-tuned (MOT17) | 0.149 | 0.900 | 67.1% | 95.6% |
+
+(Pairs of detections up to one second apart in the validation half.)
+
+To pick a fair cutoff without peeking at the labels, I relied on a simple fact: two detections in the same frame are always different people. The distances between them show what "different people" looks like in a given video, so a cutoff can be set to let only a chosen share of those pairs through. I carried DeepSORT's tuned setting over this way instead of re-tuning it on the validation half. With the old features, the 0.2 cutoff lets 0.118% of same-frame pairs through on the training half. The fine-tuned model gets the cutoff that does the same on the video it's tracking.
+
+| DeepSORT | Cutoff | HOTA | AssA | IDF1 | ID switches |
+|---|---|---|---|---|---|
+| Off-the-shelf features | 0.2 (tuned) | 51.3 | 62.6 | 59.9 | 121 |
+| Fine-tuned features, same cutoff | 0.2 | 50.7 | 61.3 | 59.3 | 145 |
+| Fine-tuned features, calibrated | 0.368 | 51.9 | 63.8 | 60.8 | 98 |
+
+With the ruler fixed, the fine-tuned model cut ID switches by 19%. This also turned up a warning. Calibrated on the training half, the fine-tuned model's cutoff balloons to 0.635, because the people it trained on are pushed apart more than anyone else will be. A model has to be calibrated on the video it's tracking, never on its own training data.
+
+*ResNet18 and OSNet x0.5 are still training.*
 
 ## Phase 3: My tracker
 
@@ -353,9 +374,33 @@ The learned row is the mean ± standard deviation over three training runs:
 
 It wins on six of the seven videos, most on MOT17-10 and MOT17-13, the two moving-camera ones at night and from a vehicle. The edge over DeepSORT is real but modest, about two standard deviations. I'm not calling it a clear win until the fine-tuned appearance model and the next steps are in. Matching takes 4.0 ms per frame; batching the motion checks across all entries brought that down from 5.7 ms without changing a single result.
 
+### The fine-tuned features, and a leak
+
+Retrained on the fine-tuned features, the learned matching reached **53.0 HOTA, 65.7 AssA and 62.5 IDF1**, the best so far. But it also made 142 ID switches, more than calibrated DeepSORT's 98, and scored a perfect 100 on its held-out check.
+
+That's a leak. The appearance model had already seen every person in the training half, so the matching learned from appearance that looked flawless there, and it over-trusts appearance on new people.
+
+Two cheap fixes didn't work:
+- **Giving the matcher each distance as a rank** against the same-frame pairs (the calibration trick above) changed nothing: 52.9 HOTA.
+- **Training a matcher only on those ranks,** using the old features, didn't carry over to the new ones: 51.6.
+
+The rank fixes the scale, but not how far appearance can be trusted.
+
+The proper fix is cross-fitting. Two extra appearance models are each trained on part of the training videos (04, 05 and 11; then 02, 09, 10 and 13), and each embeds the videos it didn't see. That way the matching only ever learns from features of people the appearance model has never met, which is the situation it faces when tracking. The two halves reached 73.1 and 79.5 mAP on people they hadn't seen.
+
+With cross-fitting, the held-out check stopped being suspiciously perfect: 98.0 average precision, with 93.2% precision and 96.8% recall. On the validation half, over three training runs each:
+
+| Learned matching, fine-tuned features, trained on | HOTA | AssA | IDF1 | ID switches |
+|---|---|---|---|---|
+| Leaked features | 52.9 ± 0.1 | 65.6 ± 0.2 | 62.6 ± 0.1 | 141 (113–155) |
+| **Cross-fit features** | 52.7 ± 0.1 | 65.2 ± 0.1 | 62.0 ± 0.2 | **107 (102–114)** |
+| DeepSORT, calibrated (for reference) | 51.9 | 63.8 | 60.8 | 98 |
+
+Cross-fitting gives up 0.2 HOTA but removes a quarter of the ID switches, and it's the version that isn't learning from leaked information, so it's the one I keep. Both beat calibrated DeepSORT by about a point of HOTA and a point and a half of AssA. ID switches are now close to DeepSORT's, though still slightly above.
+
 ### Next
 
-- Re-run everything with the fine-tuned appearance models, and pick one by accuracy per millisecond.
+- Pick an appearance model by accuracy per millisecond (ResNet18 and OSNet x0.5 are still training).
 - Let each detection's score see its competitors (the context model), so one match can inform another.
 - Learn when to forget someone instead of using a fixed time.
 - Test re-entry with simulated exits, and report predicted boxes for hidden people.
