@@ -34,14 +34,26 @@ def retrieval_scores(
     query_every: int = 5,
     batch: int = 256,
     device: str = "cuda",
+    perturb: Callable[[torch.Tensor, np.ndarray], torch.Tensor] | None = None,
 ) -> dict[str, float]:
-    """mAP and Rank-1 (%) over queries from unseen people; ``embed`` maps uint8 crops to features."""
-    features = []
-    with torch.inference_mode():
-        for i in range(0, len(val), batch):
-            chunk = torch.from_numpy(np.array(val.images[i : i + batch])).to(device)
-            features.append(torch.nn.functional.normalize(embed(chunk).float(), dim=1).cpu())
-    feats = torch.cat(features).numpy()
+    """mAP and Rank-1 (%) over queries from unseen people; ``embed`` maps uint8 crops to features.
+
+    ``perturb`` changes the query crops only, as ``perturb(crops, rows)`` on uint8 crops, so
+    each query is a person seen under other conditions searched against normal sightings.
+    """
+
+    def embed_all(change=None):
+        out = []
+        with torch.inference_mode():
+            for i in range(0, len(val), batch):
+                chunk = torch.from_numpy(np.array(val.images[i : i + batch])).to(device)
+                if change is not None:
+                    chunk = change(chunk, np.arange(i, min(i + batch, len(val))))
+                out.append(torch.nn.functional.normalize(embed(chunk).float(), dim=1).cpu())
+        return torch.cat(out).numpy()
+
+    feats = embed_all()
+    queries = feats if perturb is None else embed_all(perturb)
     ids = val.identities()
 
     aps, top1 = [], []
@@ -54,7 +66,7 @@ def retrieval_scores(
         for identity in np.unique(ids[rows][unseen]):
             members = np.flatnonzero(ids[rows] == identity)
             is_query[members[::query_every]] = True
-        sims = feats[rows[is_query]] @ feats[rows].T
+        sims = queries[rows[is_query]] @ feats[rows].T
         for q, sim in zip(np.flatnonzero(is_query), sims):
             same = ids[rows] == ids[rows[q]]
             junk = same & (np.abs(val.seconds[rows] - val.seconds[rows[q]]) <= window)

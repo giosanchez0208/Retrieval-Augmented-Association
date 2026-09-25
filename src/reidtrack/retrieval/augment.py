@@ -2,7 +2,8 @@
 
 Photometric changes cover the lighting drift a camera sees between sightings:
 global brightness, contrast, saturation and white balance ("warmth"), and a
-partial change across the crop. Random erasing stands in for partial occlusion.
+partial change across the crop. Random erasing stands in for partial occlusion, and
+random grayscale for a camera switching to infrared at night.
 """
 
 from __future__ import annotations
@@ -28,11 +29,13 @@ class Augment:
         gradient: float = 0.4,
         erase_p: float = 0.5,
         erase_area: tuple[float, float] = (0.02, 0.4),
+        gray_p: float = 0.0,
     ) -> None:
         self.flip, self.pad = flip, pad
         self.brightness, self.contrast, self.saturation, self.warmth = brightness, contrast, saturation, warmth
         self.gradient_p, self.gradient = gradient_p, gradient
         self.erase_p, self.erase_area = erase_p, erase_area
+        self.gray_p = gray_p
 
     def __call__(self, images: torch.Tensor) -> torch.Tensor:
         """uint8 (B, 3, H, W) on the GPU -> normalised float (B, 3, H, W)."""
@@ -68,6 +71,10 @@ class Augment:
         strength = uniform(-self.gradient, self.gradient) * use
         x = x * (1 + strength[:, None, None] * 2 * ramp)[:, None]
 
+        if self.gray_p:
+            gray = (0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]).expand_as(x)
+            x = torch.where((torch.rand(b, device=dev) < self.gray_p)[:, None, None, None], gray, x)
+
         x = x.clamp(0, 1)
         mean_t = torch.tensor(IMAGENET_MEAN, device=dev).view(1, 3, 1, 1)
         std_t = torch.tensor(IMAGENET_STD, device=dev).view(1, 3, 1, 1)
@@ -88,13 +95,14 @@ class Augment:
         return x
 
 
-GROUPS = ("geometry", "lighting", "blocking")
+GROUPS = ("geometry", "lighting", "blocking", "grayscale")
+DEFAULT_GROUPS = ("geometry", "lighting", "blocking")
 
 
-def augment_groups(groups: tuple[str, ...] = GROUPS) -> Augment:
+def augment_groups(groups: tuple[str, ...] = DEFAULT_GROUPS) -> Augment:
     """``Augment`` with only some groups switched on, for ablations: ``geometry`` (flips
-    and shifts), ``lighting`` (brightness, contrast, saturation, warmth, partial light)
-    and ``blocking`` (random erasing)."""
+    and shifts), ``lighting`` (brightness, contrast, saturation, warmth, partial light),
+    ``blocking`` (random erasing) and ``grayscale`` (one crop in five turned gray)."""
     unknown = set(groups) - set(GROUPS)
     if unknown:
         raise ValueError(f"unknown augmentation groups {sorted(unknown)}; choose from {', '.join(GROUPS)}")
@@ -105,6 +113,8 @@ def augment_groups(groups: tuple[str, ...] = GROUPS) -> Augment:
         off |= {"brightness": 0.0, "contrast": 0.0, "saturation": 0.0, "warmth": 0.0, "gradient_p": 0.0}
     if "blocking" not in groups:
         off |= {"erase_p": 0.0}
+    if "grayscale" in groups:
+        off |= {"gray_p": 0.2}
     return Augment(**off)
 
 

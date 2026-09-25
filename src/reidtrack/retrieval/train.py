@@ -32,7 +32,7 @@ from torch.nn import functional as F
 
 from reidtrack.pausing import PAUSED, PauseRequest
 from reidtrack.report import format_table
-from reidtrack.retrieval.augment import GROUPS, augment_groups, normalize
+from reidtrack.retrieval.augment import DEFAULT_GROUPS, GROUPS, augment_groups, normalize
 from reidtrack.retrieval.crops import load_crops
 from reidtrack.retrieval.models import BACKBONES, ReIDModel, build_backbone
 from reidtrack.retrieval.sampling import Prefetcher, SameSceneSampler
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--score-only", action="store_true", help="score --init without training")
     parser.add_argument("--resume", action="store_true", help="continue a paused or interrupted run")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--augment", default=",".join(GROUPS), help=f"augmentation groups, comma-separated, from {', '.join(GROUPS)}")
+    parser.add_argument("--augment", default=",".join(DEFAULT_GROUPS), help=f"augmentation groups, comma-separated, from {', '.join(GROUPS)}")
     parser.add_argument("--sequences", default="", help="train only on these sequences, comma-separated (cross-fitting)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))

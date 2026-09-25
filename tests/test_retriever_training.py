@@ -96,3 +96,31 @@ def test_augmentation_groups_can_be_switched_off():
     assert lighting_only.flip == 0 and lighting_only.erase_p == 0 and lighting_only.brightness > 0
     with pytest.raises(ValueError):
         augment_groups(("colour",))
+
+
+def test_probes_change_queries_the_same_way_every_time():
+    from reidtrack.retrieval.probe import PROBES, make_perturb
+
+    images = np.random.default_rng(0).integers(0, 255, size=(6, 3, 20, 10), dtype=np.uint8)
+    crops = torch.from_numpy(images[:2])
+    for name in PROBES[1:]:
+        perturb = make_perturb(name, images, "cpu")
+        a, b = perturb(crops, np.arange(2)), perturb(crops, np.arange(2))
+        assert a.dtype == torch.uint8 and a.shape == crops.shape
+        assert torch.equal(a, b) and not torch.equal(a, crops)
+    below = make_perturb("blocked below", images, "cpu")(crops, np.arange(2))
+    assert torch.equal(below[0, :, 12:], torch.from_numpy(images[3, :, 12:]))  # the lower rows come from another crop
+    assert make_perturb("clean", images, "cpu") is None
+
+
+def test_grayscale_augmentation_makes_some_crops_colorless():
+    from reidtrack.retrieval.augment import Augment
+
+    torch.manual_seed(0)
+    images = torch.randint(0, 255, (64, 3, 16, 8), dtype=torch.uint8)
+    out = Augment(flip=0, pad=0, brightness=0, contrast=0, saturation=0, warmth=0, gradient_p=0, erase_p=0, gray_p=0.5)(images)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    rgb = out * std + mean
+    colorless = (rgb.max(dim=1).values - rgb.min(dim=1).values).amax(dim=(1, 2)) < 1e-5
+    assert 16 < int(colorless.sum()) < 48
