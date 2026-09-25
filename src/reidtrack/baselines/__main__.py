@@ -52,9 +52,10 @@ def main(argv: list[str] | None = None) -> int:
     deep.add_argument("--max-iou-distance", type=float, default=0.7)
     deep.add_argument("--max-age", type=int, default=70)
     deep.add_argument("--n-init", type=int, default=3)
+    deep.add_argument("--camera", action="store_true", help="compensate camera motion (cached), as in BoT-SORT")
 
     args = parser.parse_args(argv)
-    embeddings = None
+    embeddings, camera = None, getattr(args, "camera", False)
     if args.tracker == "sort":
         config = {"min_score": args.min_score, "max_age": args.max_age, "min_hits": args.min_hits,
                   "iou_threshold": args.iou}
@@ -71,21 +72,21 @@ def main(argv: list[str] | None = None) -> int:
 
     name = args.name or f"{args.tracker}_{args.det}_{args.split}"
     timer = StageTimer(warmup=10)
-    results = run_split(make, args.split, args.det, args.root, timer, embeddings)
+    results = run_split(make, args.split, args.det, args.root, timer, embeddings, camera)
     ev = evaluate(results, args.split, args.root)
 
     out = args.runs / name
     save_results(results, out)
     ms = timer.summary()["track"]["mean"]
     (out / "scores.json").write_text(
-        json.dumps({"tracker": args.tracker, "detector": args.det, "config": config,
+        json.dumps({"tracker": args.tracker, "detector": args.det, "camera": camera, "config": config,
                     "track_ms_per_frame": ms, **ev.to_dict()}, indent=2) + "\n"
     )
     print(
         format_table(
             ["sequence", *Scores.HEADERS],
             [[n, *s.row()] for n, s in ev.sequences.items()],
-            caption=f"MOT17 {args.split}, {args.tracker}, {args.det} detections",
+            caption=f"MOT17 {args.split}, {args.tracker}{' + camera' if camera else ''}, {args.det} detections",
             footer=[["combined", *ev.combined.row()]],
             note=f"tracking only: {ms:.2f} ms/frame ({1e3 / ms:.0f} fps); detections precomputed",
         )

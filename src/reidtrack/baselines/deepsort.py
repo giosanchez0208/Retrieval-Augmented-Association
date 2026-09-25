@@ -18,6 +18,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from reidtrack.track.boxes import iou_matrix, xyah_to_xyxy, xyxy_to_xyah
+from reidtrack.track.camera import warp_state
 from reidtrack.track.kalman import XYAHKalman
 
 CHI2_95_4DOF = 9.4877  # 95% quantile of the chi-square distribution, 4 degrees of freedom
@@ -58,8 +59,10 @@ class DeepSort:
         self._next_id = 1
 
     def update(
-        self, xyxy: np.ndarray, scores: np.ndarray, features: np.ndarray | None = None
+        self, xyxy: np.ndarray, scores: np.ndarray, features: np.ndarray | None = None, warp: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``warp`` is the optional camera motion from the previous frame, applied to every
+        track's prediction as in BoT-SORT (not part of the original DeepSORT)."""
         if features is None:
             raise ValueError("DeepSort needs appearance features for every detection")
         keep = scores >= self.min_score
@@ -68,6 +71,8 @@ class DeepSort:
 
         if self.tracks:
             mean, cov = self.kf.predict(np.stack([t.mean for t in self.tracks]), np.stack([t.cov for t in self.tracks]))
+            if warp is not None:
+                mean, cov = warp_state(mean, cov, warp)
             for t, m, c in zip(self.tracks, mean, cov):
                 t.mean, t.cov = m, c
                 t.misses += 1
