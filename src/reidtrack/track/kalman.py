@@ -1,0 +1,74 @@
+"""Constant-velocity Kalman filters for boxes.
+
+``XYAHKalman`` tracks centre, aspect ratio and height, with noise proportional to
+the box height: the motion model of DeepSORT and ByteTrack. ``XYSRKalman`` tracks
+centre, area and aspect ratio with fixed noise: the motion model of SORT.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+
+class XYAHKalman:
+    """State ``(cx, cy, a, h, vcx, vcy, va, vh)``; measurement ``(cx, cy, a, h)``."""
+
+    def __init__(self, std_position: float = 1 / 20, std_velocity: float = 1 / 160) -> None:
+        self.std_position = std_position
+        self.std_velocity = std_velocity
+        self.F = np.eye(8)
+        self.F[:4, 4:] = np.eye(4)
+        self.H = np.eye(4, 8)
+
+    def initiate(self, xyah: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        h = xyah[3]
+        p, v = 2 * self.std_position * h, 10 * self.std_velocity * h
+        std = np.array([p, p, 1e-2, p, v, v, 1e-5, v])
+        return np.r_[xyah, np.zeros(4)], np.diag(std**2)
+
+    def predict(self, mean: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Batched prediction: ``mean`` (N, 8), ``cov`` (N, 8, 8)."""
+        h = mean[:, 3]
+        p, v = self.std_position * h, self.std_velocity * h
+        std = np.stack([p, p, np.full_like(h, 1e-2), p, v, v, np.full_like(h, 1e-5), v], axis=1)
+        noise = np.zeros_like(cov)
+        diag = np.arange(8)
+        noise[:, diag, diag] = std**2
+        return mean @ self.F.T, self.F @ cov @ self.F.T + noise
+
+    def update(self, mean: np.ndarray, cov: np.ndarray, xyah: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        p = self.std_position * mean[3]
+        innovation_cov = self.H @ cov @ self.H.T + np.diag(np.array([p, p, 1e-1, p]) ** 2)
+        gain = np.linalg.solve(innovation_cov, self.H @ cov).T
+        mean = mean + gain @ (xyah - self.H @ mean)
+        cov = cov - gain @ innovation_cov @ gain.T
+        return mean, cov
+
+
+class XYSRKalman:
+    """State ``(cx, cy, s, r, vcx, vcy, vs)`` with area ``s`` and aspect ratio ``r``;
+    measurement ``(cx, cy, s, r)``. The aspect ratio is modelled as constant."""
+
+    def __init__(self) -> None:
+        self.F = np.eye(7)
+        self.F[0, 4] = self.F[1, 5] = self.F[2, 6] = 1
+        self.H = np.eye(4, 7)
+        self.R = np.diag([1.0, 1.0, 10.0, 10.0])
+        self.Q = np.diag([1.0, 1.0, 1.0, 1.0, 1e-2, 1e-2, 1e-4])
+        self.P0 = np.diag([10.0, 10.0, 10.0, 10.0, 1e4, 1e4, 1e4])
+
+    def initiate(self, xysr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.r_[xysr, np.zeros(3)], self.P0.copy()
+
+    def predict(self, x: np.ndarray, P: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x = x.copy()
+        if x[2] + x[6] <= 0:  # the area would turn negative: stop shrinking
+            x[6] = 0
+        return self.F @ x, self.F @ P @ self.F.T + self.Q
+
+    def update(self, x: np.ndarray, P: np.ndarray, xysr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        S = self.H @ P @ self.H.T + self.R
+        K = np.linalg.solve(S, self.H @ P).T
+        x = x + K @ (xysr - self.H @ x)
+        I_KH = np.eye(7) - K @ self.H
+        return x, I_KH @ P @ I_KH.T + K @ self.R @ K.T  # Joseph form
