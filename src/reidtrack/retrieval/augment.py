@@ -88,6 +88,26 @@ class Augment:
         return x
 
 
+GROUPS = ("geometry", "lighting", "blocking")
+
+
+def augment_groups(groups: tuple[str, ...] = GROUPS) -> Augment:
+    """``Augment`` with only some groups switched on, for ablations: ``geometry`` (flips
+    and shifts), ``lighting`` (brightness, contrast, saturation, warmth, partial light)
+    and ``blocking`` (random erasing)."""
+    unknown = set(groups) - set(GROUPS)
+    if unknown:
+        raise ValueError(f"unknown augmentation groups {sorted(unknown)}; choose from {', '.join(GROUPS)}")
+    off = {}
+    if "geometry" not in groups:
+        off |= {"flip": 0.0, "pad": 0}
+    if "lighting" not in groups:
+        off |= {"brightness": 0.0, "contrast": 0.0, "saturation": 0.0, "warmth": 0.0, "gradient_p": 0.0}
+    if "blocking" not in groups:
+        off |= {"erase_p": 0.0}
+    return Augment(**off)
+
+
 def normalize(images: torch.Tensor) -> torch.Tensor:
     """uint8 (B, 3, H, W) -> normalised float, no augmentation."""
     mean = torch.tensor(IMAGENET_MEAN, device=images.device).view(1, 3, 1, 1)

@@ -32,7 +32,7 @@ from torch.nn import functional as F
 
 from reidtrack.pausing import PAUSED, PauseRequest
 from reidtrack.report import format_table
-from reidtrack.retrieval.augment import Augment, normalize
+from reidtrack.retrieval.augment import GROUPS, augment_groups, normalize
 from reidtrack.retrieval.crops import load_crops
 from reidtrack.retrieval.models import BACKBONES, ReIDModel, build_backbone
 from reidtrack.retrieval.sampling import Prefetcher, SameSceneSampler
@@ -76,7 +76,7 @@ def build_model(backbone: str, num_classes: int, init: str | None) -> ReIDModel:
     return model
 
 
-TRAINING_KEYS = ("backbone", "init", "epochs", "people", "crops", "lr", "weight_decay", "warmup", "margin",
+TRAINING_KEYS = ("backbone", "init", "epochs", "people", "crops", "lr", "weight_decay", "warmup", "margin", "augment",
                  "eval_every", "max_steps", "seed", "sequences")
 
 
@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--score-only", action="store_true", help="score --init without training")
     parser.add_argument("--resume", action="store_true", help="continue a paused or interrupted run")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--augment", default=",".join(GROUPS), help=f"augmentation groups, comma-separated, from {', '.join(GROUPS)}")
     parser.add_argument("--sequences", default="", help="train only on these sequences, comma-separated (cross-fitting)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
@@ -166,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     # The scaler skips the first optimiser steps while it calibrates the loss scale,
     # which makes PyTorch warn about the scheduler stepping first. That is expected.
     warnings.filterwarnings("ignore", message=r"Detected call of `lr_scheduler\.step\(\)`")
-    augment = Augment()
+    augment = augment_groups(tuple(g for g in args.augment.split(",") if g))
     labels_t = labels.astype(np.int64)
 
     out.mkdir(parents=True, exist_ok=True)

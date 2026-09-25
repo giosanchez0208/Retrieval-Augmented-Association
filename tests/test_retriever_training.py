@@ -83,3 +83,16 @@ def test_the_sampler_can_be_restricted_to_some_sequences():
     for _ in range(5):
         assert set(data.sequence[sampler.batch()].tolist()) == {1}
     assert sampler.batches_per_epoch == (20 * 12) // 64
+
+
+def test_augmentation_groups_can_be_switched_off():
+    from reidtrack.retrieval.augment import augment_groups
+
+    torch.manual_seed(0)
+    images = torch.randint(0, 255, (8, 3, 64, 32), dtype=torch.uint8)
+
+    torch.testing.assert_close(augment_groups(())(images), normalize(images))
+    lighting_only = augment_groups(("lighting",))
+    assert lighting_only.flip == 0 and lighting_only.erase_p == 0 and lighting_only.brightness > 0
+    with pytest.raises(ValueError):
+        augment_groups(("colour",))
