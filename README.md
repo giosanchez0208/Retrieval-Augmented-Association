@@ -336,9 +336,17 @@ The first learned matcher had 21 cues, everything above except "where they were"
 | Other | 2 | 3.0 | 6 |
 | **Total** | 108 | 99.5 | 102 |
 
+![Why IDs changed, mine against DeepSORT](docs/figures/idsw_anatomy.svg)
+
 The bank does its job: it restarts people as new IDs 30% less often than DeepSORT does (28.5 against 41), which is the long-gap memory from the introduction working. What it loses is short-range. Swaps and flip-backs happen between two people who are both in view, with typical gaps of 0.03 to 0.25 s. Every position cue in the 21-cue matcher measured against the motion model's *prediction*, which drifts when someone slows down, turns, or goes undetected for a frame. None of them said where the person actually was.
 
 So I added one cue, the overlap with the box each person was last matched to. It cut ID switches from 107 to **98.3** on average over six training runs, below DeepSORT's 102, with HOTA unchanged.
+
+**The restarts that remain are recognition failures, not memory failures.** Before trying to learn when to forget someone, I checked why the remaining 28.5 "lost, then restarted" switches happen. For each one, I looked up whether the person's old entry was still in the bank when they came back:
+
+![Why the remaining restarts happen](docs/figures/restarts.svg)
+
+In **73%** of them the bank still had the person and didn't recognize them, after a median gap of only 0.73 s. Forgetting too early accounts for 7.75 switches per run, 8% of all ID switches, so a learned forgetting rule has little to win. Recognizing someone who was hidden for under a second is the appearance model's job, and Phase 4 measures how well it holds up.
 
 ### Results
 
@@ -376,6 +384,45 @@ I tried six ways to push the ID switches down further. None survived:
 
 **Most of these were detours I could have skipped.** Five of the six compared effects of 3 to 10 ID switches using three runs each, when a single run swings by more than 10. Measuring that noise first would have ruled most of them out before they started. Camera compensation is the clearest case. It looked like it helped until six runs each showed it didn't, and for surveillance, where cameras don't move, it would do nothing anyway.
 
+![ID switches per trained run](docs/figures/idsw_noise.svg)
+
+Every dot is one trained matcher. The spread within a row is as wide as the distance between rows, which is why three runs can't settle a difference of five switches.
+
+## Phase 4: Robustness for a bus camera
+
+The setting I have in mind for this tracker is a fixed CCTV camera inside a bus. The camera never moves relative to the cabin, which is one more reason camera compensation didn't matter in Phase 3. Almost everything else does: the light swings from window glare to tunnels as the bus drives, passengers block each other constantly, and an edge device on a bus may not have the budget to process every frame. So before changing anything, I measured how the pieces I already have hold up.
+
+### Lighting and blocking
+
+I took the unseen validation people from Phase 2 and changed each query crop one way at a time, leaving every gallery crop untouched. That's the real situation: a person seen once under one light, searched for under another. The lighting changes halve or boost brightness, flatten contrast to 40%, tint the crop warm or cool, or throw a hard shadow over one half. Blocking covers part of the person with the same region of *another* person's crop. I deliberately didn't use the random noise the blocking augmentation trains on, since that would flatter it.
+
+![Recognition under lighting changes and blocking](docs/figures/stress_test.svg)
+
+**Lighting is mostly handled.** Darkening and color casts cost 1.3 to 2.0 mAP, overexposure 3.8, and a hard shadow 5.0. Glare is the exception: flattening contrast costs **10.1 mAP**, five times the cost of halving the brightness.
+
+**Blocking is not.** Covering the lower 40% of a person costs 18.7 mAP, one side 9.8, and a random patch of 25 to 40% costs 26.1. Covering the top 40%, the head and shoulders, costs **45.4** and leaves 32.7, less than half the clean score. The model recognizes people mostly by their upper body. My guess at why: legs are what other people hide most often in MOT17's crowds, so the model learned to lean on the part that's usually visible. I haven't tested that.
+
+One caveat worth stating: the blocking probes also put another person's clothes into the query, so part of each drop may be the model matching the blocker instead of losing the person. On a bus that's also the realistic case, since the thing in front of a passenger is usually another passenger. It also lines up with Phase 3's restarts: most of them are the bank failing to recognize someone after a gap of under a second, and on a busy bus that gap is usually someone walking past.
+
+### Skipped frames
+
+An edge device may not keep up with every frame, so I fed both trackers every 2nd or every 3rd frame and told them the lower frame rate. The skipped frames are filled in by interpolation so the results can still be scored against every annotated frame.
+
+![Tracking every n-th frame](docs/figures/frame_skip.svg)
+
+| Validation half | Every frame | Every 2nd frame | Every 3rd frame |
+|---|---|---|---|
+| Mine, AssA | 64.8 | 63.5 | 63.2 |
+| Mine, ID switches | 98.3 | 74 (64 to 79) | 67 (64 to 72) |
+| DeepSORT, ID switches | 102 | 96 | 100 |
+| My lead in HOTA / IDF1 | +0.7 / +1.1 | +1.0 / +1.4 | **+1.4 / +2.2** |
+
+(ID switches compare between trackers at the same stride, not across strides: skipping frames also skips chances to switch.)
+
+**The matcher handles skipped frames without ever training on them.** Association barely moves: AssA drops 1.3 points at every 2nd frame and 1.6 at every 3rd. Most of the HOTA loss is detection accuracy, from 42.9 to 39.4, which comes from interpolated boxes on the frames nobody looked at, not from lost identities. Meanwhile the lead over DeepSORT *widens*, to a third fewer ID switches at every 3rd frame. The mechanism is in the design: every time limit in my tracker is in seconds, and every position cue is divided by the person's height. DeepSORT counts in frames. Its confirmation step and its memory are frame counts, and its motion gate expects one-frame steps.
+
+So training the matcher on skipped frames has little to win, at most those 1.6 AssA points. Processing every 3rd frame of a 30 fps camera also triples the time budget per frame to about 100 ms, which is room for a bigger detector on a small device.
+
 ## Limitations
 
 **ID switches beat DeepSORT on average, not every time.** Single training runs land anywhere from 95 to 108 switches, while DeepSORT stays at 102 to 103 however I nudge its cutoff. One flipped decision early in a video changes everything after it, and a learned matcher makes more close calls than fixed rules do.
@@ -385,6 +432,10 @@ I tried six ways to push the ID switches down further. None survived:
 **Hidden people aren't reported.** MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
 
 **No detector in the loop yet.** Every number here uses MOT17's public detections, so the real-time claim rests on adding up measured parts, not on timing the whole pipeline.
+
+**Covering the head and shoulders more than halves recognition.** Blocking the top 40% of a person drops mAP from 78.1 to 32.7 (Phase 4), and a random 25 to 40% patch drops it to 52.0.
+
+**Lighting drift inside the tracker is untested.** The stress test changes single sightings. A whole video whose light drifts as the sun moves, or jumps in a tunnel, hasn't been run through the tracker yet.
 
 **Re-entry is untested.** The bank can bring back someone who walked out and returned, but MOT17 gives returning people new IDs, so that mode is off in every number above.
 
@@ -434,6 +485,7 @@ uv run python -m reidtrack.baselines --name deepsort_osnet_x0_5 deepsort --embed
 - **`train`** fine-tunes one. Press Ctrl+C, or create a file named `PAUSE` in its run folder, to pause; run the same command with `--resume` to continue.
 - **`cache`** embeds every detection with the fine-tuned model.
 - **`baselines deepsort`** tracks with it, at its label-free cutoff from "Choosing the model".
+- **`retrieval.probe --models osnet_x0_5_mot17`** runs Phase 4's stress test on any trained models. `retrieval.train --augment geometry,lighting,blocking` picks which augmentation groups to train with.
 
 These commands build the chosen OSNet x0.5. Swap in `--backbone osnet_x1_0` or `resnet18` for the others.
 
@@ -454,7 +506,7 @@ uv run python -m reidtrack.association.train --embeddings osnet_x0_5_crossfit --
 uv run python -m reidtrack --embeddings osnet_x0_5_mot17 --reranker data/weights/reranker/pairwise_osnet_x0_5.pt
 ```
 
-- **`python -m reidtrack`** runs my tracker on the validation half, with the hand-set rules unless a `--reranker` is given. `--set key=value` changes any setting, for example `--set hysteresis=0.05` or `--set emit_hidden=0.6`. `--camera` turns on camera compensation, and `--interpolate FRAMES` fills short gaps after tracking, which makes the result offline.
+- **`python -m reidtrack`** runs my tracker on the validation half, with the hand-set rules unless a `--reranker` is given. `--set key=value` changes any setting, for example `--set hysteresis=0.05` or `--set emit_hidden=0.6`. `--camera` turns on camera compensation, `--interpolate FRAMES` fills short gaps after tracking, which makes the result offline, and `--stride N` tracks every N-th frame only. The baselines take `--stride` too.
 - **`association.train`** records candidate pairs from the tracker on the training half, trains the learned matcher on them, and reports the held-out check. `--model context` trains the attention version, and `--rounds 3` adds on-policy rounds.
 
 ### Evaluation
@@ -482,6 +534,14 @@ uv run python -m reidtrack.eval.latency --seq MOT17-04
 ```
 
 Benchmarks reading and decoding frames. `StageTimer` in `reidtrack.eval.latency` times the stages of a pipeline.
+
+### Figures
+
+```bash
+uv run python docs/figures/make_figures.py
+```
+
+Redraws the README's charts as SVG from the measured numbers, which the script lists next to the commands that produced them.
 
 ### Tests
 

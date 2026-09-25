@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="665" height="128" viewBox="0 0 665 128" font-family="Helvetica, Arial, sans-serif">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="12.0" y="20.0" font-size="13" text-anchor="start" fill="#222222" font-weight="bold">"Lost, then restarted" switches: why the person got a new ID</text>
+<line x1="245.0" y1="30.0" x2="245.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="245.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">0</text>
+<line x1="317.0" y1="30.0" x2="317.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="317.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">5</text>
+<line x1="389.0" y1="30.0" x2="389.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="389.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">10</text>
+<line x1="461.0" y1="30.0" x2="461.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="461.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">15</text>
+<line x1="533.0" y1="30.0" x2="533.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="533.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">20</text>
+<line x1="605.0" y1="30.0" x2="605.0" y2="94.0" stroke="#e6e6e6" stroke-width="1.0"/>
+<text x="605.0" y="108.0" font-size="10" text-anchor="middle" fill="#777777" font-weight="normal">25</text>
+<text x="237.0" y="44.0" font-size="11" text-anchor="end" fill="#222222" font-weight="normal">still in the bank, not recognized</text>
+<rect x="245.0" y="34.0" width="298.8" height="9.0" fill="#0072B2"/>
+<text x="547.8" y="42.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">20.75</text>
+<text x="237.0" y="64.0" font-size="11" text-anchor="end" fill="#222222" font-weight="normal">forgotten after walking out (0.5 s)</text>
+<rect x="245.0" y="54.0" width="64.8" height="9.0" fill="#999999"/>
+<text x="313.8" y="62.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">4.5</text>
+<text x="237.0" y="84.0" font-size="11" text-anchor="end" fill="#222222" font-weight="normal">forgotten while hidden (5 s)</text>
+<rect x="245.0" y="74.0" width="46.8" height="9.0" fill="#999999"/>
+<text x="295.8" y="82.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">3.25</text>
+<line x1="245.0" y1="30.0" x2="245.0" y2="94.0" stroke="#777777" stroke-width="1.0"/>
+</svg>
