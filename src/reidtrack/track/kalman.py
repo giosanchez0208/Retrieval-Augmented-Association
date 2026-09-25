@@ -36,13 +36,22 @@ class XYAHKalman:
         noise[:, diag, diag] = std**2
         return mean @ self.F.T, self.F @ cov @ self.F.T + noise
 
-    def update(self, mean: np.ndarray, cov: np.ndarray, xyah: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _innovation_cov(self, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
         p = self.std_position * mean[3]
-        innovation_cov = self.H @ cov @ self.H.T + np.diag(np.array([p, p, 1e-1, p]) ** 2)
+        return self.H @ cov @ self.H.T + np.diag(np.array([p, p, 1e-1, p]) ** 2)
+
+    def update(self, mean: np.ndarray, cov: np.ndarray, xyah: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        innovation_cov = self._innovation_cov(mean, cov)
         gain = np.linalg.solve(innovation_cov, self.H @ cov).T
         mean = mean + gain @ (xyah - self.H @ mean)
         cov = cov - gain @ innovation_cov @ gain.T
         return mean, cov
+
+    def gating_distance(self, mean: np.ndarray, cov: np.ndarray, xyah: np.ndarray) -> np.ndarray:
+        """Squared Mahalanobis distance of measurements (M, 4) from the track's prediction."""
+        chol = np.linalg.cholesky(self._innovation_cov(mean, cov))
+        z = np.linalg.solve(chol, (np.asarray(xyah).reshape(-1, 4) - self.H @ mean).T)
+        return np.sum(z * z, axis=0)
 
 
 class XYSRKalman:

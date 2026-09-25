@@ -44,7 +44,9 @@ class Sort:
         self.frame = 0
         self._next_id = 1
 
-    def update(self, xyxy: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def update(
+        self, xyxy: np.ndarray, scores: np.ndarray, features: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         self.frame += 1
         keep = scores >= self.min_score
         dets, det_scores = xyxy[keep], scores[keep]

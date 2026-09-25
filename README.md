@@ -55,14 +55,23 @@ uv run python -m reidtrack.data.stats --root data/mot17
 
 `prepare` verifies and deduplicates the release into `data/mot17` and exports the splits for evaluation. It writes nothing if the copies differ. Afterwards `MOT17/` can be deleted. `stats` prints the per-sequence figures quoted above. MOT17 is not part of this repository and remains under its own terms.
 
+### Appearance embeddings
+
+```bash
+uv run python -m reidtrack.retrieval.cache --weights data/weights/osnet_x1_0_msmt17.pth
+```
+
+Embeds every public detection with OSNet[^osnet] on the GPU and caches the vectors under `data/mot17/cache/`. The MSMT17-trained OSNet x1.0 weights come from the torchreid model zoo[^torchreid].
+
 ### Baselines
 
 ```bash
 uv run python -m reidtrack.baselines sort --min-score 0.5
 uv run python -m reidtrack.baselines bytetrack
+uv run python -m reidtrack.baselines deepsort --min-score 0.5 --max-cosine 0.2
 ```
 
-Reimplementations of SORT[^sort] and ByteTrack[^bytetrack], run on the public detections. Results and scores go to `runs/<name>/`.
+Reimplementations of SORT[^sort], ByteTrack[^bytetrack] and DeepSORT[^deepsort], run on the public detections. DeepSORT reads the cached embeddings. Results and scores go to `runs/<name>/`.
 
 ### Evaluation
 
@@ -98,7 +107,7 @@ uv run pytest
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE).
+Apache-2.0; see [LICENSE](LICENSE). `src/reidtrack/retrieval/osnet.py` is adapted from deep-person-reid[^torchreid] under the MIT License, whose notice is kept in that file. Pretrained weights and datasets are not included and remain under their own terms.
 
 [^kuhn]: H. W. Kuhn. The Hungarian method for the assignment problem. *Naval Research Logistics Quarterly*, 2(1–2):83–97, 1955.
 [^stats]: Measured on the MOT17 training set with `python -m reidtrack.data.stats`. An occlusion here is a stretch in which a person's visibility drops below 0.1 and later recovers.
@@ -109,3 +118,6 @@ Apache-2.0; see [LICENSE](LICENSE).
 [^clear]: K. Bernardin, R. Stiefelhagen. Evaluating Multiple Object Tracking Performance: The CLEAR MOT Metrics. *EURASIP Journal on Image and Video Processing*, 2008.
 [^idf1]: E. Ristani, F. Solera, R. Zou, R. Cucchiara, C. Tomasi. Performance Measures and a Data Set for Multi-Target, Multi-Camera Tracking. *ECCV Workshops*, 2016. [arXiv:1609.01775](https://arxiv.org/abs/1609.01775).
 [^sort]: A. Bewley, Z. Ge, L. Ott, F. Ramos, B. Upcroft. Simple Online and Realtime Tracking. *ICIP*, 2016. [arXiv:1602.00763](https://arxiv.org/abs/1602.00763).
+[^deepsort]: N. Wojke, A. Bewley, D. Paulus. Simple Online and Realtime Tracking with a Deep Association Metric. *ICIP*, 2017. [arXiv:1703.07402](https://arxiv.org/abs/1703.07402).
+[^osnet]: K. Zhou, Y. Yang, A. Cavallaro, T. Xiang. Omni-Scale Feature Learning for Person Re-Identification. *ICCV*, 2019. [arXiv:1905.00953](https://arxiv.org/abs/1905.00953).
+[^torchreid]: K. Zhou, T. Xiang. Torchreid: A Library for Deep Learning Person Re-Identification in Pytorch. [arXiv:1910.10093](https://arxiv.org/abs/1910.10093), 2019. Code and model zoo: [deep-person-reid](https://github.com/KaiyangZhou/deep-person-reid).

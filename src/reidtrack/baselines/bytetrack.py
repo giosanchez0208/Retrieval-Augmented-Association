@@ -69,7 +69,9 @@ class ByteTrack:
         self.frame_id = 0
         self._next_id = 1
 
-    def update(self, xyxy: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def update(
+        self, xyxy: np.ndarray, scores: np.ndarray, features: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         self.frame_id += 1
         activated, refound, newly_lost, removed = [], [], [], []
 

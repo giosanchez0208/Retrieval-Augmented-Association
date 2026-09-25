@@ -15,7 +15,9 @@ from reidtrack.eval.metrics import split_sequences
 
 
 class Tracker(Protocol):
-    def update(self, xyxy: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def update(
+        self, xyxy: np.ndarray, scores: np.ndarray, features: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Consume one frame of detections; return (track ids, boxes, scores) to report."""
         ...
 
@@ -26,27 +28,38 @@ def run_split(
     detector: str = "FRCNN",
     root: str | Path = "data/mot17",
     timer: StageTimer | None = None,
+    embeddings: str | None = None,
 ) -> dict[str, Tracks]:
     """Track every sequence of ``split``; a fresh tracker is made per sequence.
 
-    Only the tracker's ``update`` is timed, under the stage name "track".
+    ``embeddings`` names a feature cache (see ``reidtrack.retrieval.cache``) whose
+    rows are passed to the tracker with the detections. Only the tracker's
+    ``update`` is timed, under the stage name "track".
     """
+    from reidtrack.retrieval.cache import load_embeddings
+
     data = Mot17(root)
     results = {}
     for name in split_sequences(split, root):
         seq = data.sequence(name)
         rng = seq.frames(split)
-        det = seq.load_det(detector, split)
+        det = seq.load_det(detector)
+        in_split = (det.frame >= rng.first) & (det.frame <= rng.last)
+        features = None
+        if embeddings is not None:
+            features = load_embeddings(root, embeddings, detector, name, det.frame)[in_split]
+        det = det.select(in_split)
         bounds = np.searchsorted(det.frame, np.arange(rng.first, rng.last + 2))
         tracker = make_tracker(seq.info)
         frames, ids, boxes, scores = [], [], [], []
         for i, frame in enumerate(range(rng.first, rng.last + 1)):
             lo, hi = bounds[i], bounds[i + 1]
+            args = (det.xyxy[lo:hi].astype(np.float64), det.score[lo:hi], None if features is None else features[lo:hi])
             if timer is None:
-                out = tracker.update(det.xyxy[lo:hi].astype(np.float64), det.score[lo:hi])
+                out = tracker.update(*args)
             else:
                 with timer.stage("track"):
-                    out = tracker.update(det.xyxy[lo:hi].astype(np.float64), det.score[lo:hi])
+                    out = tracker.update(*args)
                 timer.next_frame()
             frames.append(np.full(len(out[0]), frame, dtype=np.int32))
             ids.append(out[0])
