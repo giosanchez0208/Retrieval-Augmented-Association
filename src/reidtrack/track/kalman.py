@@ -53,6 +53,21 @@ class XYAHKalman:
         z = np.linalg.solve(chol, (np.asarray(xyah).reshape(-1, 4) - self.H @ mean).T)
         return np.sum(z * z, axis=0)
 
+    def gating_distances(self, means: np.ndarray, covs: np.ndarray, xyah: np.ndarray) -> np.ndarray:
+        """``gating_distance`` for many tracks at once: means (N, 8), covs (N, 8, 8) -> (N, M)."""
+        xyah = np.asarray(xyah).reshape(-1, 4)
+        if len(means) == 0 or len(xyah) == 0:
+            return np.zeros((len(means), len(xyah)))
+        p = self.std_position * means[:, 3]
+        noise = np.zeros((len(means), 4, 4))
+        noise[:, [0, 1, 3], [0, 1, 3]] = (p**2)[:, None]
+        noise[:, 2, 2] = 1e-2
+        innovation = self.H @ covs @ self.H.T + noise
+        chol = np.linalg.cholesky(innovation)  # (N, 4, 4)
+        diff = xyah[None, :, :] - (means @ self.H.T)[:, None, :]  # (N, M, 4)
+        z = np.linalg.solve(chol, diff.transpose(0, 2, 1))  # (N, 4, M)
+        return np.sum(z * z, axis=1)
+
 
 class XYSRKalman:
     """State ``(cx, cy, s, r, vcx, vcy, vs)`` with area ``s`` and aspect ratio ``r``;

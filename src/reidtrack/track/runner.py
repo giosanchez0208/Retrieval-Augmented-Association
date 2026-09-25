@@ -29,14 +29,17 @@ def run_split(
     root: str | Path = "data/mot17",
     timer: StageTimer | None = None,
     embeddings: str | None = None,
+    camera: bool = False,
 ) -> dict[str, Tracks]:
     """Track every sequence of ``split``; a fresh tracker is made per sequence.
 
     ``embeddings`` names a feature cache (see ``reidtrack.retrieval.cache``) whose
-    rows are passed to the tracker with the detections. Only the tracker's
+    rows are passed to the tracker with the detections. ``camera`` passes the cached
+    camera motion (see ``reidtrack.track.camera``) as ``warp``. Only the tracker's
     ``update`` is timed, under the stage name "track".
     """
     from reidtrack.retrieval.cache import load_embeddings
+    from reidtrack.track.camera import load_warps
 
     data = Mot17(root)
     results = {}
@@ -49,17 +52,19 @@ def run_split(
         if embeddings is not None:
             features = load_embeddings(root, embeddings, detector, name, det.frame)[in_split]
         det = det.select(in_split)
+        warps = load_warps(root, name) if camera else None
         bounds = np.searchsorted(det.frame, np.arange(rng.first, rng.last + 2))
         tracker = make_tracker(seq.info)
         frames, ids, boxes, scores = [], [], [], []
         for i, frame in enumerate(range(rng.first, rng.last + 1)):
             lo, hi = bounds[i], bounds[i + 1]
             args = (det.xyxy[lo:hi].astype(np.float64), det.score[lo:hi], None if features is None else features[lo:hi])
+            kwargs = {} if warps is None else {"warp": warps[frame - 1]}
             if timer is None:
-                out = tracker.update(*args)
+                out = tracker.update(*args, **kwargs)
             else:
                 with timer.stage("track"):
-                    out = tracker.update(*args)
+                    out = tracker.update(*args, **kwargs)
                 timer.next_frame()
             frames.append(np.full(len(out[0]), frame, dtype=np.int32))
             ids.append(out[0])
