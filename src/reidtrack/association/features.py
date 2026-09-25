@@ -16,8 +16,30 @@ from reidtrack.track.kalman import XYAHKalman
 NAMES = (
     "sim_best", "sim_average", "iou", "dx", "dy", "log_h", "log_w",
     "dx1", "dy1", "dx2", "dy2", "mahalanobis", "gap_s", "det_score", "crowding",
-    "active", "occluded", "exited", "log_hits",
+    "active", "occluded", "exited", "log_hits", "rank_best", "rank_average",
 )
+
+
+class NegativeCalibration:
+    """Running distribution of appearance distances between detections in the same
+    frame, which are always different people. ``rank`` turns a distance into the share
+    of those different-people pairs that were farther apart, a scale that means the
+    same for any appearance model and needs no labels. A small uniform prior keeps it
+    defined from the first frame."""
+
+    def __init__(self, bins: int = 200, prior: float = 20.0) -> None:
+        self.edges = np.linspace(0.0, 2.0, bins + 1)
+        self.counts = np.full(bins, prior / bins)
+
+    def observe(self, feats: np.ndarray) -> None:
+        if len(feats) < 2:
+            return
+        dist = 1 - feats @ feats.T
+        self.counts += np.histogram(dist[np.triu_indices(len(feats), 1)], bins=self.edges)[0]
+
+    def rank(self, distance: np.ndarray) -> np.ndarray:
+        cdf = np.concatenate([[0.0], np.cumsum(self.counts) / self.counts.sum()])
+        return 1 - np.interp(distance, self.edges, cdf)
 
 
 def pair_features(
@@ -28,6 +50,7 @@ def pair_features(
     crowding: np.ndarray,
     kf: XYAHKalman,
     now: float,
+    calibration: NegativeCalibration | None = None,
 ) -> np.ndarray:
     """(N entries, M detections, len(NAMES)) float32 cue tensor."""
     n, m = len(entries), len(boxes)
@@ -60,5 +83,8 @@ def pair_features(
     for k, regime in enumerate((Regime.ACTIVE, Regime.OCCLUDED, Regime.EXITED)):
         out[..., 15 + k] = np.array([e.regime == regime for e in entries], dtype=np.float32)[:, None]
     out[..., 18] = np.log1p([e.hits for e in entries])[:, None] / 5
+    calibration = calibration or NegativeCalibration()
+    out[..., 19] = calibration.rank(1 - out[..., 0])
+    out[..., 20] = calibration.rank(1 - out[..., 1])
     np.clip(out[..., 3:11], -10, 10, out=out[..., 3:11])
     return out

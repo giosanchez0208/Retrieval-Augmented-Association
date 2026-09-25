@@ -107,11 +107,12 @@ def pair_scores(model, cues: np.ndarray, labels: np.ndarray) -> dict[str, float]
     }
 
 
-def train(cues: np.ndarray, labels: np.ndarray, epochs: int, batch: int = 8192, lr: float = 2e-3, seed: int = 0):
+def train(cues: np.ndarray, labels: np.ndarray, epochs: int, batch: int = 8192, lr: float = 2e-3, seed: int = 0,
+          dropped: tuple[str, ...] = ()):
     from reidtrack.association.reranker import PairwiseReranker
 
     torch.manual_seed(seed)
-    model = PairwiseReranker(cues.shape[-1])
+    model = PairwiseReranker(cues.shape[-1], dropped=dropped)
     x = torch.from_numpy(cues.astype(np.float32))
     y = torch.from_numpy(labels.astype(np.float32))
     pos_weight = torch.tensor((1 - labels.mean()) / max(labels.mean(), 1e-9))
@@ -129,7 +130,8 @@ def train(cues: np.ndarray, labels: np.ndarray, epochs: int, batch: int = 8192, 
     return model.eval()
 
 
-def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-3, seed: int = 0, device: str = "cpu"):
+def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-3, seed: int = 0, device: str = "cpu",
+                  dropped: tuple[str, ...] = ()):
     """Train ``AxialReranker`` on whole frames, so each pair is scored among its competitors.
 
     Frames are padded into batches of ``frames_per_step``; padding is masked out of the
@@ -138,7 +140,7 @@ def train_context(frames, epochs: int, frames_per_step: int = 8, lr: float = 1e-
     from reidtrack.association.reranker import AxialReranker, pad_frames
 
     torch.manual_seed(seed)
-    model = AxialReranker().to(device)
+    model = AxialReranker(dropped=dropped).to(device)
     rate = np.concatenate([y.reshape(-1) for _, y, _ in frames]).mean()
     pos_weight = torch.tensor((1 - rate) / max(rate, 1e-9), device=device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -167,10 +169,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="pairwise: each pair alone; context: pairs attend to their competitors")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--device", default="cpu", help="the context model trains faster on cuda")
+    parser.add_argument("--drop-cues", default="", help="comma-separated cues to zero, e.g. sim_best,sim_average")
+    parser.add_argument("--name", help="checkpoint name (default: <model>_<embeddings>)")
     parser.add_argument("--collect-only", action="store_true", help="only record pairs and report their statistics")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--out", type=Path, default=Path("data/weights/reranker"))
     args = parser.parse_args(argv)
+    dropped = tuple(c for c in args.drop_cues.split(",") if c)
 
     frames = collect_frames("train_half", args.embeddings, args.root, args.camera)
     names = split_sequences("train_half", args.root)
@@ -187,16 +192,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.model == "pairwise":
         def fit(fs):
             return train(np.concatenate([c.reshape(-1, c.shape[-1]) for c, _, _ in fs]),
-                         np.concatenate([y.reshape(-1) for _, y, _ in fs]), args.epochs)
+                         np.concatenate([y.reshape(-1) for _, y, _ in fs]), args.epochs, dropped=dropped)
     else:
         def fit(fs):
-            return train_context(fs, args.epochs, device=args.device)
+            return train_context(fs, args.epochs, device=args.device, dropped=dropped)
     probe = fit(kept)
     held_prob = np.concatenate([probe(c).reshape(-1) for c, _, _ in held])
     held_labels = np.concatenate([y.reshape(-1) for _, y, _ in held])
     s = pair_scores(lambda _: held_prob, None, held_labels)
     model = fit(frames)
-    out = args.out / f"{args.model}_{args.embeddings}{'_camera' if args.camera else ''}.pt"
+    out = args.out / f"{args.name or args.model + '_' + args.embeddings}{'_camera' if args.camera else ''}.pt"
     model.save(out, embeddings=args.embeddings, epochs=args.epochs, pairs=int(len(labels)))
     print(format_table(["check", "AP", "precision", "recall"],
                        [["held-out MOT17-09, MOT17-11", f"{s['AP']:.1f}", f"{s['precision']:.1f}", f"{s['recall']:.1f}"]],

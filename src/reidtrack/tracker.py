@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from reidtrack.association.features import pair_features
+from reidtrack.association.features import NegativeCalibration, pair_features
 from reidtrack.memory.bank import AppearanceMemory, Entry, Regime, exiting, similarity
 from reidtrack.track.assignment import linear_assignment
 from reidtrack.track.boxes import iou_matrix, xyah_to_xyxy, xyxy_to_xyah
@@ -89,6 +89,7 @@ class RetrievalTracker:
         self.reranker = reranker
         self.recorder = recorder
         self.assignments: dict[int, int] = {}  # track id -> detection index, last frame
+        self.calibration = NegativeCalibration()  # same-frame pairs: always different people
         self.kf = XYAHKalman()
         self.memory = AppearanceMemory(self.cfg.momentum, self.cfg.prototypes, self.cfg.novelty)
         self.entries: list[Entry] = []
@@ -124,6 +125,7 @@ class RetrievalTracker:
         clean = (scores >= cfg.write_score) & (crowding < cfg.write_overlap)
         feats = np.asarray(features, dtype=np.float32)
         feats = feats / np.maximum(np.linalg.norm(feats, axis=1, keepdims=True), 1e-12)
+        self.calibration.observe(feats[high])
 
         by_regime = {r: [e for e in self.entries if e.regime == r] for r in Regime}
         active, tentative = by_regime[Regime.ACTIVE], by_regime[Regime.TENTATIVE]
@@ -133,7 +135,8 @@ class RetrievalTracker:
         pool = active + unseen
         cues = None
         if self.reranker is not None or self.recorder is not None:
-            cues = pair_features(pool, xyxy[high], scores[high], feats[high], crowding[high], self.kf, self.now)
+            cues = pair_features(pool, xyxy[high], scores[high], feats[high], crowding[high], self.kf, self.now,
+                                 self.calibration)
             if self.recorder is not None:
                 self.recorder([e.track_id for e in pool], high, cues)
         if self.reranker is not None:

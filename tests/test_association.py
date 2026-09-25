@@ -78,3 +78,23 @@ def test_padded_batches_score_like_single_frames():
         torch.testing.assert_close(batched[0, :5, :3], model(a[0]), atol=1e-5, rtol=1e-5)
         torch.testing.assert_close(batched[1, :2, :7], model(b[0]), atol=1e-5, rtol=1e-5)
     assert int(valid.sum()) == 5 * 3 + 2 * 7
+
+
+def test_same_frame_calibration_ranks_distances_against_different_people():
+    from reidtrack.association.features import NegativeCalibration
+
+    calibration = NegativeCalibration(prior=1e-6)
+    calibration.observe(np.eye(4, dtype=np.float32))  # six same-frame pairs, all at distance 1
+
+    np.testing.assert_allclose(calibration.rank(np.array([0.5, 1.5])), [1, 0], atol=1e-3)
+
+
+def test_dropped_cues_are_ignored(tmp_path):
+    model = PairwiseReranker(dropped=("sim_best", "sim_average"))
+    cues = np.random.default_rng(1).normal(size=(2, 3, len(NAMES))).astype(np.float32)
+    changed = cues.copy()
+    changed[..., :2] += 5  # the first two cues are the raw similarities
+
+    np.testing.assert_allclose(model(cues), model(changed), rtol=1e-6)
+    model.save(tmp_path / "r.pt")
+    assert PairwiseReranker.load(tmp_path / "r.pt").dropped == ("sim_best", "sim_average")
