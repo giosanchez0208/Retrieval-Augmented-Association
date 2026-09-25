@@ -232,40 +232,38 @@ This is the part I'd point at first.
 
 **Why it's needed.** The association step is learned too. It looks at pairs of a known person and a new box, and learns from the training half how far to trust appearance similarity against position and timing. So it needs appearance vectors for the training half, and the obvious source is the fine-tuned model. That's the problem: the fine-tuned model trained on every person in the training half. I measured what its features look like on those same people:
 
-| Training-half features made by | Fold A videos | Fold B videos | All seven, mAP | All seven, Rank-1 |
-|---|---|---|---|---|
-| OSNet x1.0 off the shelf, never saw MOT17 | 79.6 | 60.1 | 71.1 | 85.4 |
-| Full fine-tuned model, trained on these people | **100.0** | **100.0** | **100.0** | **100.0** |
-| Cross-fit, each video embedded by the other fold's model | 76.4 | 63.3 | 70.7 | 87.6 |
+| Training-half features made by | OSNet x0.5 | OSNet x1.0 |
+|---|---|---|
+| The off-the-shelf model, which never saw MOT17 | 69.0 | 71.1 |
+| The full fine-tuned model, which trained on these people | **99.7** | **100.0** |
+| Cross-fit: each video embedded by the other fold's model | 71.6 | 70.7 |
 
-(mAP unless marked; same scoring rules as above, with every person in the training half as a query.)
+(mAP over all seven training videos, with every person in the training half as a query and the same scoring rules as above.)
 
-**A perfect 100.** On the people it trained on, the full model practically never ranks a stranger above the right person. On new people it scores 77.9. An association step trained on those features would learn that appearance is never wrong, and then meet appearance that's wrong a fair share of the time. I found this the hard way: a matcher trained on them scored a perfect 100 average precision on its own held-out check. That's a leak, not a result.
+**A near-perfect score.** On the people it trained on, the full model practically never ranks a stranger above the right person. On new people it scores 78.1 (x0.5) and 77.9 (x1.0). An association step trained on those features would learn that appearance is never wrong, and then meet appearance that's wrong a fair share of the time. I found this the hard way: a matcher trained on x1.0's full-model features scored a perfect 100 average precision on its own held-out check. That's a leak, not a result.
 
-The cross-fit features score **70.7** on the same people, a little below the 77.9 the full model reaches on new people. Each fold model trained on about half the data, so its features are slightly worse than the ones used at test time. That errs on the safe side: the association step learns to trust appearance a bit less than it could, rather than more. (The training-half crops are every frame and the validation ones every third frame, so the 70.7 and 77.9 are only roughly comparable.)
+The cross-fit features score **71.6** for x0.5, a little below the 78.1 the full model reaches on new people. Each fold model trained on about half the data, so its features are slightly worse than the ones used at test time. That errs on the safe side: the association step learns to trust appearance a bit less than it could, rather than more. (The training-half crops are every frame and the validation ones every third frame, so 71.6 and 78.1 are only roughly comparable.)
 
 **What I did.**
 
 1. Split the seven training videos into two folds by video. Each training video is a different scene, so no person lands in both folds, and each fold mixes static and moving cameras.
-2. Trained one OSNet x1.0 per fold, with the full model's exact recipe and starting weights, on that fold's training-half crops only. They took 39 and 30 minutes, 69 in total, exactly as long as the full model took on its own.
+2. Trained one model per fold, with the full model's exact recipe and starting weights, on that fold's training-half crops only. I did this for OSNet x1.0 first and again for OSNet x0.5 once it was chosen. Each pair took about as long as training the full model once: 43 minutes for x0.5, 69 for x1.0.
 3. Had each fold model embed every detection in the *other* fold's videos, and saved both halves into one shared set of features covering all seven videos.
 4. The association step trains on those features. When tracking the validation half, it gets the full model's features instead.
 
-The fold models have that one job. They aren't candidates for the tracker, and nothing is merged, averaged, or distilled from them. OSNet x0.5 and ResNet18 in the table above were trained separately, the same way as the full model.
+The fold models have that one job. They aren't candidates for the tracker, and nothing is merged, averaged, or distilled from them. Neither has a validation set of its own: the validation half is only used to score them, and like every model here they keep their final checkpoint.
 
-**How the fold models perform.** On unseen validation people:
+**How the fold models perform.** On unseen validation people, as mAP / Rank-1:
 
-| Model | Trained on | Embeds | mAP | Rank-1 |
+| Model | Trained on | Embeds | OSNet x0.5 | OSNet x1.0 |
 |---|---|---|---|---|
-| Fold A | MOT17-04, 05, 11 | MOT17-02, 09, 10, 13 | 73.1 | 84.6 |
-| Fold B | MOT17-02, 09, 10, 13 | MOT17-04, 05, 11 | 79.5 | 90.3 |
-| Full | all seven | the validation half, at test time | 77.9 | 88.1 |
+| Fold A | MOT17-04, 05, 11 | MOT17-02, 09, 10, 13 | 74.5 / 85.3 | 73.1 / 84.6 |
+| Fold B | MOT17-02, 09, 10, 13 | MOT17-04, 05, 11 | 78.2 / 90.7 | 79.5 / 90.3 |
+| Full | all seven | the validation half, at test time | 78.1 / 88.1 | 77.9 / 88.1 |
 
-Each model is scored on the people *it* never saw, which is a different set for each, so these three rows can't be compared with each other. They only show that each model learned something. The training-half table is the fairer comparison, and there neither fold model is consistently better than the off-the-shelf one: model B scores 3.2 mAP below it on fold A's videos, and model A scores 3.2 above it on fold B's. That suggests three or four scenes of training don't carry far into scenes a model has never seen.
+Each model is scored on the people *it* never saw, which is a different set for each, so the rows can't be compared with each other. They only show that each model learned something. The training-half table is the fairer comparison. There, against the off-the-shelf model on the same videos, the fold models range from 3.2 mAP behind (x1.0's fold B model on fold A's videos) to 4.9 ahead (x0.5's fold A model on fold B's). Three or four scenes of training carry only a little into scenes a model has never seen.
 
-**What it changed.** With cross-fit features, the association step's held-out check reads **98.0** average precision (93.2% precision, 96.8% recall) instead of a suspicious 100.
-
-The folds so far are OSNet x1.0's. With OSNet x0.5 chosen above, it needs a pair of its own.
+**What it changed.** With x1.0's cross-fit features, the association step's held-out check reads **98.0** average precision (93.2% precision, 96.8% recall) instead of a suspicious 100.
 
 ## Usage
 
@@ -303,22 +301,26 @@ uv run python -m reidtrack.baselines deepsort --min-score 0.5 --max-cosine 0.2
 uv run python -m reidtrack.retrieval.crops --split train_half
 uv run python -m reidtrack.retrieval.crops --split val_half --stride 3
 uv run python -m reidtrack.retrieval.bench
-uv run python -m reidtrack.retrieval.train --backbone osnet_x1_0 --init data/weights/osnet_x1_0_msmt17.pth
-uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_mot17/last.pt --model osnet_x1_0_mot17
+uv run python -m reidtrack.retrieval.train --backbone osnet_x0_5 --init data/weights/osnet_x0_5_msmt17.pth
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x0_5_mot17/last.pt --model osnet_x0_5_mot17
+uv run python -m reidtrack.baselines --name deepsort_osnet_x0_5 deepsort --embeddings osnet_x0_5_mot17 --min-score 0.5 --max-cosine 0.375
 ```
 
 - **`crops`** cuts the training and scoring crops.
 - **`bench`** times candidate models.
 - **`train`** fine-tunes one. Press Ctrl+C, or create a file named `PAUSE` in its run folder, to pause; run the same command with `--resume` to continue.
 - **`cache`** embeds every detection with the fine-tuned model.
+- **`baselines deepsort`** tracks with it, at its label-free cutoff from "Choosing the model".
+
+These commands build the chosen OSNet x0.5. Swap in `--backbone osnet_x1_0` or `resnet18` for the others.
 
 Cross-fitting trains one model per fold and has each embed the other fold into a shared cache:
 
 ```bash
-uv run python -m reidtrack.retrieval.train --init data/weights/osnet_x1_0_msmt17.pth --name osnet_x1_0_foldA --sequences MOT17-04,MOT17-05,MOT17-11
-uv run python -m reidtrack.retrieval.train --init data/weights/osnet_x1_0_msmt17.pth --name osnet_x1_0_foldB --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
-uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_foldA/last.pt --model osnet_x1_0_crossfit --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
-uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x1_0_foldB/last.pt --model osnet_x1_0_crossfit --sequences MOT17-04,MOT17-05,MOT17-11
+uv run python -m reidtrack.retrieval.train --backbone osnet_x0_5 --init data/weights/osnet_x0_5_msmt17.pth --name osnet_x0_5_foldA --sequences MOT17-04,MOT17-05,MOT17-11
+uv run python -m reidtrack.retrieval.train --backbone osnet_x0_5 --init data/weights/osnet_x0_5_msmt17.pth --name osnet_x0_5_foldB --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x0_5_foldA/last.pt --model osnet_x0_5_crossfit --sequences MOT17-02,MOT17-09,MOT17-10,MOT17-13
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x0_5_foldB/last.pt --model osnet_x0_5_crossfit --sequences MOT17-04,MOT17-05,MOT17-11
 ```
 
 ### Evaluation
