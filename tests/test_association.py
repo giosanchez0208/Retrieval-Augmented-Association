@@ -98,3 +98,36 @@ def test_dropped_cues_are_ignored(tmp_path):
     np.testing.assert_allclose(model(cues), model(changed), rtol=1e-6)
     model.save(tmp_path / "r.pt")
     assert PairwiseReranker.load(tmp_path / "r.pt").dropped == ("sim_best", "sim_average")
+
+
+def test_competition_cues_compare_each_pair_with_its_best_rival():
+    f = np.eye(4, dtype=np.float32)
+    a = make_entry([100, 100, 150, 250], f[0])
+    b = make_entry([400, 100, 450, 250], f[1])
+    feats = np.stack([f[0], 0.6 * f[0] + 0.8 * f[1]])  # the second box half-resembles both people
+    cues = pair_features([a, b], np.array([[100.0, 100, 150, 250], [400, 100, 450, 250]]), np.array([0.9, 0.9]),
+                         feats, np.zeros(2), XYAHKalman(), now=1.0)
+    c = {n: cues[..., i] for i, n in enumerate(NAMES)}
+
+    np.testing.assert_allclose(c["sim_margin_entry"][0], [1 - 0.6, 0.6 - 1], atol=1e-6)  # a's two boxes
+    np.testing.assert_allclose(c["sim_margin_det"][:, 1], [0.6 - 0.8, 0.8 - 0.6], atol=1e-6)  # box 2's two people
+    np.testing.assert_allclose(np.diag(c["iou_margin_det"]), [1, 1], atol=1e-6)
+    np.testing.assert_allclose(np.diag(c["iou_last"]), [1, 1], atol=1e-6)
+
+
+def test_the_last_seen_box_moves_with_the_camera():
+    tracker = RetrievalTracker(1920, 1080)
+    f = np.eye(8, dtype=np.float32)[:1]
+    tracker.update(np.array([[400.0, 300, 460, 460]]), np.array([0.9]), f)
+    shift = np.array([[1.0, 0, 25], [0, 1, -10]])
+    tracker.update(np.zeros((0, 4)), np.zeros(0), np.zeros((0, 8), np.float32), warp=shift)
+
+    np.testing.assert_allclose(tracker.entries[0].last_box, [425, 290, 485, 450])
+
+
+def test_models_trained_before_new_cues_still_load(tmp_path):
+    old = PairwiseReranker(NAMES[:21])
+    old.save(tmp_path / "old.pt")
+    cues = np.random.default_rng(2).normal(size=(2, 3, len(NAMES))).astype(np.float32)
+
+    np.testing.assert_allclose(PairwiseReranker.load(tmp_path / "old.pt")(cues), old(cues[..., :21]), rtol=1e-6)

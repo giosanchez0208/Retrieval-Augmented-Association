@@ -17,7 +17,21 @@ NAMES = (
     "sim_best", "sim_average", "iou", "dx", "dy", "log_h", "log_w",
     "dx1", "dy1", "dx2", "dy2", "mahalanobis", "gap_s", "det_score", "crowding",
     "active", "occluded", "exited", "log_hits", "rank_best", "rank_average",
+    "iou_last", "sim_margin_entry", "sim_margin_det", "iou_margin_entry", "iou_margin_det",
 )
+
+
+def _margin(x: np.ndarray, axis: int) -> np.ndarray:
+    """Each value minus its best rival along ``axis``, a rival of 0 when there is none:
+    how clearly this pair beats the other candidates of the same entry or detection."""
+    if x.shape[axis] < 2:
+        return x.copy()
+    top2 = np.sort(x, axis=axis).take([-1, -2], axis=axis)
+    best, second = np.split(top2, 2, axis=axis)
+    shape = [1] * x.ndim
+    shape[axis] = -1
+    is_best = np.arange(x.shape[axis]).reshape(shape) == np.expand_dims(np.argmax(x, axis=axis), axis)
+    return x - np.where(is_best, second, best)
 
 
 class NegativeCalibration:
@@ -86,5 +100,11 @@ def pair_features(
     calibration = calibration or NegativeCalibration()
     out[..., 19] = calibration.rank(1 - out[..., 0])
     out[..., 20] = calibration.rank(1 - out[..., 1])
+    last = np.array([e.last_box if e.last_box is not None else xyah_to_xyxy(e.mean[:4]) for e in entries])
+    out[..., 21] = iou_matrix(last, boxes)  # where the person was, not where the motion model puts them
+    out[..., 22] = _margin(out[..., 0], axis=1)
+    out[..., 23] = _margin(out[..., 0], axis=0)
+    out[..., 24] = _margin(out[..., 2], axis=1)
+    out[..., 25] = _margin(out[..., 2], axis=0)
     np.clip(out[..., 3:11], -10, 10, out=out[..., 3:11])
     return out

@@ -15,25 +15,28 @@ class PairwiseReranker(nn.Module):
     """A small MLP over the pair cues of ``reidtrack.association.features`` (rung 2 of
     the ablation ladder: learned, but each pair is scored without seeing the others)."""
 
-    def __init__(self, cues: int = len(NAMES), hidden: int = 64, dropped: tuple[str, ...] = ()) -> None:
+    def __init__(self, names: tuple[str, ...] = NAMES, hidden: int = 64, dropped: tuple[str, ...] = ()) -> None:
         super().__init__()
+        self._set_names(names, dropped)
         self.net = nn.Sequential(
-            nn.Linear(cues, hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1)
+            nn.Linear(len(names), hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1)
         )
-        self._set_dropped(dropped)
 
-    def _set_dropped(self, dropped: tuple[str, ...]) -> None:
-        """Cues zeroed at training and inference, e.g. raw similarities, so the model can
-        only use scale-free appearance ranks."""
-        unknown = set(dropped) - set(NAMES)
+    def _set_names(self, names: tuple[str, ...], dropped: tuple[str, ...]) -> None:
+        """``names`` are the cues the model reads: all of NAMES, or its first few for a model
+        trained before later cues were added. ``dropped`` cues are zeroed at training and
+        inference, e.g. raw similarities, so the model can only use scale-free ranks."""
+        if tuple(NAMES[: len(names)]) != tuple(names):
+            raise ValueError("cues must be the first entries of NAMES; retrain the model")
+        unknown = set(dropped) - set(names)
         if unknown:
             raise ValueError(f"unknown cues {sorted(unknown)}")
-        self.dropped = tuple(dropped)
-        self.register_buffer("keep", torch.tensor([n not in dropped for n in NAMES], dtype=torch.float32))
+        self.names, self.dropped = tuple(names), tuple(dropped)
+        self.register_buffer("keep", torch.tensor([n not in dropped for n in names], dtype=torch.float32))
 
     def forward(self, cues: torch.Tensor) -> torch.Tensor:
         """Logits, shape (..., 1) -> (...)."""
-        return self.net(cues * self.keep).squeeze(-1)
+        return self.net(cues[..., : len(self.names)] * self.keep).squeeze(-1)
 
     def __call__(self, cues: np.ndarray | torch.Tensor, *args, **kwargs):  # type: ignore[override]
         """NumPy cues -> probabilities (used by the tracker); tensors -> logits as usual."""
@@ -46,7 +49,7 @@ class PairwiseReranker(nn.Module):
 
     def save(self, path: str | Path, **extra) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"kind": type(self).__name__, "cues": list(NAMES), "dropped": list(self.dropped),
+        torch.save({"kind": type(self).__name__, "cues": list(self.names), "dropped": list(self.dropped),
                     "state_dict": self.state_dict(), **extra}, path)
 
     @classmethod
@@ -85,11 +88,11 @@ class AxialReranker(PairwiseReranker):
     candidates of the same entry and of the same detection before assignment.
     """
 
-    def __init__(self, cues: int = len(NAMES), dim: int = 32, heads: int = 2, layers: int = 2,
+    def __init__(self, names: tuple[str, ...] = NAMES, dim: int = 32, heads: int = 2, layers: int = 2,
                  dropped: tuple[str, ...] = ()) -> None:
         nn.Module.__init__(self)
-        self._set_dropped(dropped)
-        self.embed = nn.Sequential(nn.Linear(cues, dim), nn.ReLU(), nn.Linear(dim, dim))
+        self._set_names(names, dropped)
+        self.embed = nn.Sequential(nn.Linear(len(names), dim), nn.ReLU(), nn.Linear(dim, dim))
         self.blocks = nn.ModuleList(AxialBlock(dim, heads) for _ in range(layers))
         self.head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
 
@@ -105,7 +108,7 @@ class AxialReranker(PairwiseReranker):
         if entry_pad is None:
             entry_pad = torch.zeros(b, n, dtype=torch.bool, device=cues.device)
             det_pad = torch.zeros(b, m, dtype=torch.bool, device=cues.device)
-        x = self.embed(cues * self.keep)
+        x = self.embed(cues[..., : len(self.names)] * self.keep)
         for block in self.blocks:
             x = block(x, entry_pad, det_pad)
         logits = self.head(x).squeeze(-1)
@@ -135,9 +138,10 @@ def pad_frames(frames: list[tuple[torch.Tensor, torch.Tensor]]):
 
 def load_reranker(path: str | Path) -> nn.Module:
     state = torch.load(path, map_location="cpu", weights_only=True)
-    if tuple(state["cues"]) != NAMES:
-        raise ValueError(f"{path} was trained on different cues; retrain it")
     kinds = {"PairwiseReranker": PairwiseReranker, "AxialReranker": AxialReranker}
-    model = kinds[state.get("kind", "PairwiseReranker")](len(NAMES), dropped=tuple(state.get("dropped", ())))
+    try:
+        model = kinds[state.get("kind", "PairwiseReranker")](tuple(state["cues"]), dropped=tuple(state.get("dropped", ())))
+    except ValueError as err:
+        raise ValueError(f"{path}: {err}") from None
     model.load_state_dict(state["state_dict"])
     return model.eval()

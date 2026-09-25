@@ -36,6 +36,7 @@ class Entry:
     appearance: np.ndarray | None = None  # running average, unit length
     prototypes: list[np.ndarray] = field(default_factory=list)
     hits: int = 1
+    last_box: np.ndarray | None = None  # xyxy of the last matched detection
     recalls: int = 0  # times re-matched after being occluded or exited
 
     def views(self) -> list[np.ndarray]:

@@ -120,6 +120,9 @@ class RetrievalTracker:
             mean, cov = warp_state(np.stack([e.mean for e in self.entries]), np.stack([e.cov for e in self.entries]), warp)
             for e, m, c in zip(self.entries, mean, cov):
                 e.mean, e.cov = m, c
+                if e.last_box is not None:
+                    corners = e.last_box.reshape(2, 2) @ warp[:, :2].T + warp[:, 2]
+                    e.last_box = corners.reshape(4)
 
         high = np.flatnonzero(scores >= cfg.high_score)
         low = np.flatnonzero((scores >= cfg.low_score) & (scores < cfg.high_score))
@@ -257,6 +260,7 @@ class RetrievalTracker:
             entry.recalls += 1
         entry.regime = Regime.ACTIVE
         entry.last_seen = self.now
+        entry.last_box = np.asarray(box, dtype=np.float64)
         entry.score = float(score)
         entry.hits += 1
         if clean:
@@ -264,7 +268,8 @@ class RetrievalTracker:
 
     def _start(self, box: np.ndarray, score: float, feature: np.ndarray) -> Entry:
         mean, cov = self.kf.initiate(xyxy_to_xyah(box))
-        entry = Entry(self._next_id, mean, cov, first_seen=self.now, last_seen=self.now, score=float(score))
+        entry = Entry(self._next_id, mean, cov, first_seen=self.now, last_seen=self.now, score=float(score),
+                      last_box=np.asarray(box, dtype=np.float64))
         entry.regime = Regime.ACTIVE if self.frame == 1 else Regime.TENTATIVE
         self.memory.write(entry, feature)  # a first view even if crowded: better than none
         self._next_id += 1

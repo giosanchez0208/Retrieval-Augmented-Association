@@ -39,8 +39,13 @@ def ground_truth_ids(det_xyxy: np.ndarray, gt_xyxy: np.ndarray, gt_ids: np.ndarr
     return out
 
 
-def collect_frames(split: str, embeddings: str, root: Path, camera: bool = False, detector: str = "FRCNN"):
-    """Run the hand-set tracker over ``split``; one (cues (N, M, C), labels (N, M), sequence) per frame."""
+def collect_frames(split: str, embeddings: str, root: Path, camera: bool = False, detector: str = "FRCNN",
+                   reranker=None):
+    """Run the tracker over ``split``; one (cues (N, M, C), labels (N, M), sequence) per frame.
+
+    With ``reranker`` the learned matcher drives the tracker while pairs are recorded, so
+    the pairs come from the situations that matcher gets itself into (on-policy).
+    Without it, the hand-set rules drive."""
     from reidtrack.retrieval.cache import load_embeddings
     from reidtrack.track.camera import load_warps
     from reidtrack.tracker import RetrievalTracker, TrackerConfig
@@ -62,7 +67,8 @@ def collect_frames(split: str, embeddings: str, root: Path, camera: bool = False
         def record(track_ids, dets, cues):
             frame_state["pairs"] = (track_ids, dets, cues)
 
-        tracker = RetrievalTracker(seq.info.width, seq.info.height, seq.info.frame_rate, TrackerConfig(), recorder=record)
+        tracker = RetrievalTracker(seq.info.width, seq.info.height, seq.info.frame_rate, TrackerConfig(), reranker,
+                                   recorder=record)
         bounds = np.searchsorted(det.frame, np.arange(rng.first, rng.last + 2))
         gbounds = np.searchsorted(gt.frame, np.arange(rng.first, rng.last + 2))
         for i, frame in enumerate(range(rng.first, rng.last + 1)):
@@ -109,10 +115,11 @@ def pair_scores(model, cues: np.ndarray, labels: np.ndarray) -> dict[str, float]
 
 def train(cues: np.ndarray, labels: np.ndarray, epochs: int, batch: int = 8192, lr: float = 2e-3, seed: int = 0,
           dropped: tuple[str, ...] = ()):
+    from reidtrack.association.features import NAMES
     from reidtrack.association.reranker import PairwiseReranker
 
     torch.manual_seed(seed)
-    model = PairwiseReranker(cues.shape[-1], dropped=dropped)
+    model = PairwiseReranker(NAMES[: cues.shape[-1]], dropped=dropped)
     x = torch.from_numpy(cues.astype(np.float32))
     y = torch.from_numpy(labels.astype(np.float32))
     pos_weight = torch.tensor((1 - labels.mean()) / max(labels.mean(), 1e-9))
@@ -171,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu", help="the context model trains faster on cuda")
     parser.add_argument("--drop-cues", default="", help="comma-separated cues to zero, e.g. sim_best,sim_average")
     parser.add_argument("--name", help="checkpoint name (default: <model>_<embeddings>)")
+    parser.add_argument("--rounds", type=int, default=1,
+                        help="rounds after the first record pairs with the previous round's model driving the tracker")
     parser.add_argument("--collect-only", action="store_true", help="only record pairs and report their statistics")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--out", type=Path, default=Path("data/weights/reranker"))
@@ -185,10 +194,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.collect_only:
         return 0
 
-    # sanity check on held-out sequences before training on everything
-    held_seqs = {names.index("MOT17-09"), names.index("MOT17-11")}
-    kept = [f for f in frames if f[2] not in held_seqs]
-    held = [f for f in frames if f[2] in held_seqs]
     if args.model == "pairwise":
         def fit(fs):
             return train(np.concatenate([c.reshape(-1, c.shape[-1]) for c, _, _ in fs]),
@@ -196,13 +201,25 @@ def main(argv: list[str] | None = None) -> int:
     else:
         def fit(fs):
             return train_context(fs, args.epochs, device=args.device, dropped=dropped)
+    model = fit(frames)
+    for r in range(2, args.rounds + 1):  # on-policy: the matcher drives, its own situations get labelled
+        more = collect_frames("train_half", args.embeddings, args.root, args.camera, reranker=model)
+        frames += more
+        print(f"round {r}: +{len(more):,} frames, {sum(y.size for _, y, _ in more):,} pairs")
+        model = fit(frames)
+
+    # sanity check on held-out sequences. After round 1 their later pairs were recorded by a
+    # model that had trained on them, so the check gets looser with each round.
+    held_seqs = {names.index("MOT17-09"), names.index("MOT17-11")}
+    kept = [f for f in frames if f[2] not in held_seqs]
+    held = [f for f in frames if f[2] in held_seqs]
     probe = fit(kept)
     held_prob = np.concatenate([probe(c).reshape(-1) for c, _, _ in held])
     held_labels = np.concatenate([y.reshape(-1) for _, y, _ in held])
     s = pair_scores(lambda _: held_prob, None, held_labels)
-    model = fit(frames)
     out = args.out / f"{args.name or args.model + '_' + args.embeddings}{'_camera' if args.camera else ''}.pt"
-    model.save(out, embeddings=args.embeddings, epochs=args.epochs, pairs=int(len(labels)))
+    model.save(out, embeddings=args.embeddings, epochs=args.epochs, rounds=args.rounds,
+               pairs=int(sum(y.size for _, y, _ in frames)))
     print(format_table(["check", "AP", "precision", "recall"],
                        [["held-out MOT17-09, MOT17-11", f"{s['AP']:.1f}", f"{s['precision']:.1f}", f"{s['recall']:.1f}"]],
                        caption=f"{args.model.capitalize()} reranker, same-person classification at p >= 0.5",
