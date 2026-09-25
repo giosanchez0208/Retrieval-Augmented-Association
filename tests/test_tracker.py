@@ -105,3 +105,28 @@ def test_crowded_sightings_do_not_write_appearance():
     run(tracker, [([box_at(400), box_at(410)], [unit(5), unit(6)], [0.9, 0.9])])
     assert len(tracker.entries[0].prototypes) == len(before)
     assert tracker.entries[0].regime == Regime.ACTIVE
+
+
+def test_hidden_people_can_be_reported_for_a_while():
+    frames = walker(400, 5, 20, unit(0)) + [([], [], [])] * 40
+    quiet = run(RetrievalTracker(1920, 1080), frames)
+    shown = run(RetrievalTracker(1920, 1080, config=TrackerConfig(emit_hidden=0.5)), frames)
+
+    assert quiet[20:] == [[]] * 40
+    assert shown[20:35] == [[1]] * 15  # predicted boxes for half a second at 30 fps
+    assert shown[36:] == [[]] * 24
+
+
+def test_interpolation_fills_short_gaps_only():
+    from reidtrack.data.mot import Tracks
+    from reidtrack.track.postprocess import interpolate
+
+    tracks = Tracks(
+        frame=np.array([1, 4, 30], np.int32), track_id=np.array([7, 7, 7], np.int32),
+        xyxy=np.array([[0, 0, 10, 10], [30, 0, 40, 10], [30, 0, 40, 10]], np.float32), score=np.array([0.9, 0.6, 0.8], np.float32),
+    )
+    out = interpolate(tracks, max_gap=5)
+
+    assert out.frame.tolist() == [1, 2, 3, 4, 30]
+    np.testing.assert_allclose(out.xyxy[1], [10, 0, 20, 10])
+    assert out.score[1] == np.float32(0.6)

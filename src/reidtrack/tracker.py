@@ -67,6 +67,8 @@ class TrackerConfig:
     fuse_score: bool = True
     min_box_area: float = 100.0
     max_aspect: float = 1.6
+    emit_hidden: float = 0.0  # seconds to keep reporting a hidden person's predicted box; 0 is off
+    emit_min_hits: int = 5  # only for people seen at least this often
 
 
 class RetrievalTracker:
@@ -294,7 +296,14 @@ class RetrievalTracker:
     def _output(self, shown: set[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ids, boxes, scores = [], [], []
         for e in self.entries:
-            if e.regime != Regime.ACTIVE or id(e) not in shown:
+            visible = e.regime == Regime.ACTIVE and id(e) in shown
+            hidden = (
+                e.regime == Regime.OCCLUDED
+                and self.cfg.emit_hidden > 0
+                and e.hits >= self.cfg.emit_min_hits
+                and self.now - e.last_seen <= self.cfg.emit_hidden + 1e-9  # frame / fps rounds
+            )
+            if not (visible or hidden):
                 continue
             box = xyah_to_xyxy(e.mean[:4])
             w, h = box[2] - box[0], box[3] - box[1]

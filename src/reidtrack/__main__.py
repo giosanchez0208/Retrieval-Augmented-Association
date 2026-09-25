@@ -42,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--det", choices=DETECTORS, default="FRCNN")
     parser.add_argument("--camera", action="store_true", help="compensate camera motion (cached)")
     parser.add_argument("--reranker", type=Path, help="learned reranker checkpoint (default: hand-set costs)")
+    parser.add_argument("--interpolate", type=int, default=0, metavar="FRAMES",
+                        help="offline: fill gaps up to this many frames inside tracks")
     parser.add_argument("--split", choices=SPLITS, default="val_half")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a TrackerConfig field")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
@@ -58,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     make = lambda info: RetrievalTracker(info.width, info.height, info.frame_rate, config, reranker)  # noqa: E731
     timer = StageTimer(warmup=10)
     results = run_split(make, args.split, args.det, args.root, timer, args.embeddings, args.camera)
+    if args.interpolate:
+        from reidtrack.track.postprocess import interpolate
+
+        results = {name: interpolate(tracks, args.interpolate) for name, tracks in results.items()}
     ev = evaluate(results, args.split, args.root)
 
     name = args.name or f"raa_{args.embeddings}_{args.det}_{args.split}"
@@ -67,8 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     (out / "scores.json").write_text(json.dumps(
         {"tracker": "retrieval-augmented", "embeddings": args.embeddings, "detector": args.det,
          "camera": args.camera, "reranker": str(args.reranker) if args.reranker else None,
+         "interpolate": args.interpolate,
          "config": dataclasses.asdict(config), "track_ms_per_frame": ms, **ev.to_dict()}, indent=2) + "\n")
-    changed = ", ".join(args.set + (["camera"] if args.camera else []) + (["learned reranker"] if args.reranker else [])) or "defaults"
+    changed = ", ".join(args.set + (["camera"] if args.camera else []) + (["learned reranker"] if args.reranker else [])
+                        + ([f"interpolate {args.interpolate}"] if args.interpolate else [])) or "defaults"
     print(format_table(
         ["sequence", *Scores.HEADERS],
         [[n, *s.row()] for n, s in ev.sequences.items()],
