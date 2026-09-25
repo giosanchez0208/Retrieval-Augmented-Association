@@ -100,19 +100,14 @@ def test_dropped_cues_are_ignored(tmp_path):
     assert PairwiseReranker.load(tmp_path / "r.pt").dropped == ("sim_best", "sim_average")
 
 
-def test_competition_cues_compare_each_pair_with_its_best_rival():
-    f = np.eye(4, dtype=np.float32)
-    a = make_entry([100, 100, 150, 250], f[0])
-    b = make_entry([400, 100, 450, 250], f[1])
-    feats = np.stack([f[0], 0.6 * f[0] + 0.8 * f[1]])  # the second box half-resembles both people
-    cues = pair_features([a, b], np.array([[100.0, 100, 150, 250], [400, 100, 450, 250]]), np.array([0.9, 0.9]),
-                         feats, np.zeros(2), XYAHKalman(), now=1.0)
-    c = {n: cues[..., i] for i, n in enumerate(NAMES)}
+def test_iou_last_measures_against_where_the_person_was():
+    f = np.eye(4, dtype=np.float32)[0]
+    e = make_entry([100, 100, 150, 250], f)
+    e.last_box = np.array([130.0, 100, 180, 250])  # the prediction lags where the person really was
+    cues = pair_features([e], np.array([[130.0, 100, 180, 250]]), np.array([0.9]), f[None], np.zeros(1), XYAHKalman(), now=1.0)
+    c = dict(zip(NAMES, cues[0, 0]))
 
-    np.testing.assert_allclose(c["sim_margin_entry"][0], [1 - 0.6, 0.6 - 1], atol=1e-6)  # a's two boxes
-    np.testing.assert_allclose(c["sim_margin_det"][:, 1], [0.6 - 0.8, 0.8 - 0.6], atol=1e-6)  # box 2's two people
-    np.testing.assert_allclose(np.diag(c["iou_margin_det"]), [1, 1], atol=1e-6)
-    np.testing.assert_allclose(np.diag(c["iou_last"]), [1, 1], atol=1e-6)
+    assert c["iou_last"] == 1 and c["iou"] < 1
 
 
 def test_the_last_seen_box_moves_with_the_camera():
