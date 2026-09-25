@@ -130,3 +130,17 @@ def test_interpolation_fills_short_gaps_only():
     assert out.frame.tolist() == [1, 2, 3, 4, 30]
     np.testing.assert_allclose(out.xyxy[1], [10, 0, 20, 10])
     assert out.score[1] == np.float32(0.6)
+
+
+def test_hysteresis_keeps_a_pairing_until_a_rival_wins_clearly():
+    def slightly_prefers_the_other_box(cues):  # the box where the person was scores 0.60, a far one 0.62
+        return np.tile([0.60, 0.62], (cues.shape[0], 1))
+
+    frames = [([box_at(400)], [unit(0)], [0.9]), ([box_at(400), box_at(1200)], [unit(0), unit(0)], [0.9, 0.9])]
+    plain = RetrievalTracker(1920, 1080, reranker=slightly_prefers_the_other_box)
+    sticky = RetrievalTracker(1920, 1080, config=TrackerConfig(hysteresis=0.1), reranker=slightly_prefers_the_other_box)
+    run(plain, frames)
+    run(sticky, frames)
+
+    assert plain.assignments[1] == 1  # without it, the person jumps to the slightly better box
+    assert sticky.assignments[1] == 0

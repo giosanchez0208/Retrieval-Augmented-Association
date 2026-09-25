@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from reidtrack.association.features import NegativeCalibration, pair_features
+from reidtrack.association.features import NAMES, NegativeCalibration, pair_features
 from reidtrack.memory.bank import AppearanceMemory, Entry, Regime, exiting, similarity
 from reidtrack.track.assignment import linear_assignment
 from reidtrack.track.boxes import iou_matrix, xyah_to_xyxy, xyxy_to_xyah
@@ -54,6 +54,7 @@ class TrackerConfig:
     tentative_limit: float = 0.7
     top_k: int = 10
     accept: float = 0.5  # learned reranker: minimum same-person probability
+    hysteresis: float = 0.0  # learned reranker: bonus for continuing last frame's pairing; 0 is off
     patience_occluded: float = 5.0  # seconds
     patience_exited: float = 0.5  # seconds; covers edge jitter and misread exits
     patience_reentry: float = 30.0  # seconds an exited entry is kept in re-entry mode
@@ -146,7 +147,10 @@ class RetrievalTracker:
                 self.recorder([e.track_id for e in pool], high, cues)
         if self.reranker is not None:
             # one joint assignment over every bank entry, abstaining below ``accept``
-            cost = self._top_k(1 - self.reranker(cues).astype(np.float64)) if len(pool) and len(high) else np.zeros((len(pool), len(high)))
+            prob = self.reranker(cues).astype(np.float64) if len(pool) and len(high) else np.zeros((len(pool), len(high)))
+            if cfg.hysteresis > 0 and prob.size:
+                prob += cfg.hysteresis * self._continuing(pool, cues)
+            cost = self._top_k(1 - prob) if prob.size else prob
             free = self._match(pool, high, cost, 1 - cfg.accept, matched)
         else:
             cost = self._cost(active, xyxy[high], scores[high], feats[high], cfg.appearance_limit, recall=False)
@@ -253,6 +257,17 @@ class RetrievalTracker:
         overlap = iou_matrix(xyxy, xyxy)
         np.fill_diagonal(overlap, 0)
         return overlap.max(axis=1)
+
+    def _continuing(self, pool: list[Entry], cues: np.ndarray) -> np.ndarray:
+        """1 for each person matched last frame, at the box that best overlaps where they
+        were (IoU at least 0.3); 0 elsewhere. A switch then has to win by the bonus."""
+        out = np.zeros(cues.shape[:2])
+        last = cues[..., NAMES.index("iou_last")]
+        best = last.argmax(axis=1)
+        just_seen = np.array([self.now - e.last_seen <= 1.5 / self.frame_rate for e in pool])
+        rows = np.flatnonzero(just_seen & (last[np.arange(len(pool)), best] >= 0.3))
+        out[rows, best[rows]] = 1
+        return out
 
     def _write(self, entry: Entry, box: np.ndarray, score: float, feature: np.ndarray, clean: bool) -> None:
         entry.mean, entry.cov = self.kf.update(entry.mean, entry.cov, xyxy_to_xyah(box))
