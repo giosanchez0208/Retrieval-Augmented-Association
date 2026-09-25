@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="650" height="276" viewBox="0 0 650 276" font-family="Helvetica, Arial, sans-serif">
 <rect width="100%" height="100%" fill="#ffffff"/>
-<text x="12.0" y="20.0" font-size="13" text-anchor="start" fill="#222222" font-weight="bold">Tracking every n-th frame, as an edge device would</text>
+<text x="12.0" y="20.0" font-size="13" text-anchor="start" fill="#222222" font-weight="bold">HOTA and IDF1 when tracking every n-th frame</text>
 <rect x="50.0" y="30.0" width="10.0" height="10.0" fill="#0072B2"/>
 <text x="64.0" y="38.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">mine</text>
 <rect x="94.8" y="30.0" width="10.0" height="10.0" fill="#E69F00"/>
@@ -73,5 +73,5 @@
 <circle cx="560.0" cy="194.3" r="3" fill="#E69F00"/>
 <text x="566.0" y="189.3" font-size="10" text-anchor="start" fill="#E69F00" font-weight="normal">57.2</text>
 <text x="350.0" y="60.0" font-size="11" text-anchor="start" fill="#222222" font-weight="bold">IDF1</text>
-<text x="12.0" y="266.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">Skipped frames are filled in by interpolation for scoring. Mine: 4 to 6 trained matchers per point.</text>
+<text x="12.0" y="266.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">Interpolation fills the skipped frames for scoring. Mine: 4 to 6 trained matchers per point.</text>
 </svg>

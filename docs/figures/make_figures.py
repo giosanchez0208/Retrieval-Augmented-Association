@@ -92,7 +92,7 @@ def stress_test():
     colors = [GRAY] + [LIGHT] * 6 + [BLOCK] * 4
     hbars("stress_test.svg", "Recognizing unseen people when the query sighting changes (mAP)", probes,
           [("OSNet x0.5", values, colors)], 90, [0, 20, 40, 60, 80], ref=(values[0], f"clean {values[0]:.1f}"),
-          note="Blue: lighting changes. Red: part of the person covered by a piece of someone else. Gallery unchanged.")
+          note="Blue: lighting changes. Red: a piece of someone else covers part of the person. The gallery stays unchanged.")
 
 
 def idsw_anatomy():
@@ -117,7 +117,7 @@ def frame_skip():
               ("IDF1", [61.72, 60.58, 59.38], [60.6, 59.2, 57.2], (56, 63))]
     pw, ph, left, top = 230, 150, 50, 70
     width, height = left + 2 * (pw + 70), top + ph + 56
-    body = [_text(12, 20, "Tracking every n-th frame, as an edge device would", 13, weight="bold")]
+    body = [_text(12, 20, "HOTA and IDF1 when tracking every n-th frame", 13, weight="bold")]
     body += _legend([("mine", MINE), ("DeepSORT", DEEPSORT)], left, 38)
     for p, (name, mine, deep, (lo, hi)) in enumerate(panels):
         x0 = left + p * (pw + 70)
@@ -135,7 +135,7 @@ def frame_skip():
             for i, v in enumerate(values):
                 body += [_circle(px(i), py(v), 3, color), _text(px(i) + 6, py(v) - 5, f"{v:.1f}", 10, color=color)]
         body.append(_text(x0, top - 10, name, 11, weight="bold"))
-    body.append(_text(12, height - 10, "Skipped frames are filled in by interpolation for scoring. Mine: 4 to 6 trained "
+    body.append(_text(12, height - 10, "Interpolation fills the skipped frames for scoring. Mine: 4 to 6 trained "
                                        "matchers per point.", 10, color=MUTED))
     (OUT / "frame_skip.svg").write_text(_svg(width, height, body), encoding="utf-8")
 
@@ -155,7 +155,7 @@ def idsw_noise():
     width, height = label_w + pw + 40, top + row_h * len(rows) + 46
     def px(v):
         return label_w + (v - lo) / (hi - lo) * pw
-    body = [_text(12, 20, "ID switches per trained run, validation half", 13, weight="bold")]
+    body = [_text(12, 20, "ID switches per trained run on the validation half", 13, weight="bold")]
     axis_y = top + row_h * len(rows)
     for t in range(lo, hi + 1, 5):
         body += [_line(px(t), top - 4, px(t), axis_y), _text(px(t), axis_y + 14, f"{t}", 10, "middle", MUTED)]

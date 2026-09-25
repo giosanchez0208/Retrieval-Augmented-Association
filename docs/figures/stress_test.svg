@@ -47,5 +47,5 @@
 <rect x="170.0" y="234.0" width="208.0" height="9.0" fill="#D55E00"/>
 <text x="382.0" y="242.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">52.0</text>
 <line x1="170.0" y1="30.0" x2="170.0" y2="254.0" stroke="#777777" stroke-width="1.0"/>
-<text x="12.0" y="292.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">Blue: lighting changes. Red: part of the person covered by a piece of someone else. Gallery unchanged.</text>
+<text x="12.0" y="292.0" font-size="10" text-anchor="start" fill="#777777" font-weight="normal">Blue: lighting changes. Red: a piece of someone else covers part of the person. The gallery stays unchanged.</text>
 </svg>
