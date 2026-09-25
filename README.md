@@ -36,6 +36,35 @@ This project uses [MOT17](https://motchallenge.net/data/MOT17/)[^mot16]. Before 
 
 As a check, the cleaned ground truth, scored as if it were tracker output, gets a perfect 100 in HOTA[^hota], MOTA[^clear] and IDF1[^idf1] on every split.
 
+## Phase 1: Baselines
+
+Before building anything new, I needed numbers to beat. I reimplemented three standard trackers from their papers and ran them on the same public FRCNN detections:
+- SORT[^sort] only uses motion.
+- ByteTrack[^bytetrack] also gives low-confidence detections a second chance.
+- DeepSORT[^deepsort] adds an appearance memory using OSNet[^osnet] embeddings.
+
+Thresholds were tuned on the training half and results reported on the validation half, so no number here was tuned on the data it was scored on.
+
+| Tracker | HOTA | AssA | IDF1 | ID switches | Matching time |
+|---|---|---|---|---|---|
+| SORT | 48.4 | 56.2 | 54.5 | 222 | 0.53 ms/frame |
+| ByteTrack | 49.4 | 57.7 | 56.2 | 198 | 0.79 ms/frame |
+| DeepSORT + OSNet | **51.3** | **62.6** | **59.9** | **121** | 1.83 ms/frame |
+
+A few things stood out:
+
+- **Remembering people pays off most where they get hidden.** ByteTrack's biggest gain was on MOT17-02, the most occluded sequence, where association accuracy went up by 10.5 points.
+- **Motion alone falls apart when the camera moves.** Both motion-only trackers struggled on MOT17-10, filmed from a moving camera at night.
+- **Appearance helps a lot.** DeepSORT cut ID switches by 39% compared to ByteTrack and gained 9.4 HOTA on MOT17-11, another moving-camera sequence. DeepSORT's memory is the simplest version of what I'm building: it looks up the closest-looking person and stores everything. That makes it the bar my approach has to clear.
+
+### Where the time goes
+
+Since this is meant to run in real time (30 FPS, or 33 ms per frame), I also measured where the time goes on my laptop's RTX 4050.
+
+- **Decoding the frame.** A 1080p frame takes 9.8 ms to decode on the CPU, about a third of the budget. Decoding it on the GPU with nvjpeg takes 4.0 ms and leaves the frame on the GPU, ready for the next step.
+- **Matching is cheap.** Every tracker above takes under 2 ms per frame.
+- **The appearance model is the expensive part.** OSNet takes about 14 ms even for a single crop, because most of that time goes into launching its many small layers rather than computing. Recording the model as a CUDA graph and replaying it cut 8 crops from 15.7 ms to 5.2 ms, with identical outputs. Past 32 crops, OSNet's depthwise convolutions become the bottleneck, so a low FLOP count doesn't guarantee low latency on a GPU. I'll pick the appearance model by measured time, not by FLOPs.
+
 ## Usage
 
 Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0.

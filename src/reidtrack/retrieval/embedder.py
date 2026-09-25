@@ -16,6 +16,18 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+def load_retriever(path: str | Path, width: str = "x1_0") -> torch.nn.Module:
+    """A retriever checkpoint from ``reidtrack.retrieval.train``, or a torchreid OSNet one."""
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if isinstance(state, dict) and "backbone" in state:
+        from reidtrack.retrieval.models import ReIDModel, build_backbone
+
+        model = ReIDModel(build_backbone(state["backbone"]), state["num_classes"])
+        model.load_state_dict(state["state_dict"])
+        return model
+    return load_osnet(path, width)
+
+
 class Embedder:
     """Crops boxes out of a frame and embeds them; returns L2-normalised vectors.
 
@@ -34,7 +46,7 @@ class Embedder:
         self.device = torch.device(device)
         self.half = half and self.device.type == "cuda"
         self.input_size = input_size
-        self.model = load_osnet(weights, width).eval().to(self.device)
+        self.model = load_retriever(weights, width).eval().to(self.device)
         self.dim = self.model.feature_dim
         self.mean = torch.tensor(IMAGENET_MEAN, device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor(IMAGENET_STD, device=self.device).view(1, 3, 1, 1)
