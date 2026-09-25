@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -30,8 +31,13 @@ def run_split(
     timer: StageTimer | None = None,
     embeddings: str | None = None,
     camera: bool = False,
+    stride: int = 1,
 ) -> dict[str, Tracks]:
     """Track every sequence of ``split``; a fresh tracker is made per sequence.
+
+    ``stride`` feeds the tracker every n-th frame only, as an edge device that skips
+    frames would, and tells it the lower frame rate. Camera motion is not composed across
+    skipped frames, so ``camera`` needs ``stride`` 1.
 
     ``embeddings`` names a feature cache (see ``reidtrack.retrieval.cache``) whose
     rows are passed to the tracker with the detections. ``camera`` passes the cached
@@ -41,6 +47,8 @@ def run_split(
     from reidtrack.retrieval.cache import load_embeddings
     from reidtrack.track.camera import load_warps
 
+    if camera and stride != 1:
+        raise ValueError("camera motion is cached per frame; use stride 1 with camera")
     data = Mot17(root)
     results = {}
     for name in split_sequences(split, root):
@@ -54,9 +62,11 @@ def run_split(
         det = det.select(in_split)
         warps = load_warps(root, name) if camera else None
         bounds = np.searchsorted(det.frame, np.arange(rng.first, rng.last + 2))
-        tracker = make_tracker(seq.info)
+        info = seq.info if stride == 1 else dataclasses.replace(seq.info, frame_rate=seq.info.frame_rate / stride)
+        tracker = make_tracker(info)
         frames, ids, boxes, scores = [], [], [], []
-        for i, frame in enumerate(range(rng.first, rng.last + 1)):
+        for frame in range(rng.first, rng.last + 1, stride):
+            i = frame - rng.first
             lo, hi = bounds[i], bounds[i + 1]
             args = (det.xyxy[lo:hi].astype(np.float64), det.score[lo:hi], None if features is None else features[lo:hi])
             kwargs = {} if warps is None else {"warp": warps[frame - 1]}

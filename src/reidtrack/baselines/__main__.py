@@ -30,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
     parser.add_argument("--runs", type=Path, default=Path("runs"), help="output folder")
     parser.add_argument("--name", help="run name (default: <tracker>_<det>_<split>)")
+    parser.add_argument("--stride", type=int, default=1,
+                        help="track every n-th frame only; skipped frames are filled in by interpolation for scoring")
     trackers = parser.add_subparsers(dest="tracker", required=True)
 
     sort = trackers.add_parser("sort", help="SORT (IoU + Kalman, no memory)")
@@ -72,14 +74,18 @@ def main(argv: list[str] | None = None) -> int:
 
     name = args.name or f"{args.tracker}_{args.det}_{args.split}"
     timer = StageTimer(warmup=10)
-    results = run_split(make, args.split, args.det, args.root, timer, embeddings, camera)
+    results = run_split(make, args.split, args.det, args.root, timer, embeddings, camera, args.stride)
+    if args.stride > 1:
+        from reidtrack.track.postprocess import interpolate
+
+        results = {n: interpolate(tracks, args.stride - 1) for n, tracks in results.items()}
     ev = evaluate(results, args.split, args.root)
 
     out = args.runs / name
     save_results(results, out)
     ms = timer.summary()["track"]["mean"]
     (out / "scores.json").write_text(
-        json.dumps({"tracker": args.tracker, "detector": args.det, "camera": camera, "config": config,
+        json.dumps({"tracker": args.tracker, "detector": args.det, "camera": camera, "stride": args.stride, "config": config,
                     "track_ms_per_frame": ms, **ev.to_dict()}, indent=2) + "\n"
     )
     print(

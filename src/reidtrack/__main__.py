@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reranker", type=Path, help="learned reranker checkpoint (default: hand-set costs)")
     parser.add_argument("--interpolate", type=int, default=0, metavar="FRAMES",
                         help="offline: fill gaps up to this many frames inside tracks")
+    parser.add_argument("--stride", type=int, default=1,
+                        help="track every n-th frame only, as an edge device skipping frames; the skipped "
+                             "frames are filled in by interpolation for scoring")
     parser.add_argument("--split", choices=SPLITS, default="val_half")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a TrackerConfig field")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
@@ -59,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         reranker = PairwiseReranker.load(args.reranker)
     make = lambda info: RetrievalTracker(info.width, info.height, info.frame_rate, config, reranker)  # noqa: E731
     timer = StageTimer(warmup=10)
-    results = run_split(make, args.split, args.det, args.root, timer, args.embeddings, args.camera)
+    results = run_split(make, args.split, args.det, args.root, timer, args.embeddings, args.camera, args.stride)
+    if args.stride > 1:
+        args.interpolate = max(args.interpolate, args.stride - 1)
     if args.interpolate:
         from reidtrack.track.postprocess import interpolate
 
@@ -73,9 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     (out / "scores.json").write_text(json.dumps(
         {"tracker": "retrieval-augmented", "embeddings": args.embeddings, "detector": args.det,
          "camera": args.camera, "reranker": str(args.reranker) if args.reranker else None,
-         "interpolate": args.interpolate,
+         "interpolate": args.interpolate, "stride": args.stride,
          "config": dataclasses.asdict(config), "track_ms_per_frame": ms, **ev.to_dict()}, indent=2) + "\n")
     changed = ", ".join(args.set + (["camera"] if args.camera else []) + (["learned reranker"] if args.reranker else [])
+                        + ([f"every {args.stride} frames"] if args.stride > 1 else [])
                         + ([f"interpolate {args.interpolate}"] if args.interpolate else [])) or "defaults"
     print(format_table(
         ["sequence", *Scores.HEADERS],
