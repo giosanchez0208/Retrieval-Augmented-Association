@@ -151,7 +151,7 @@ flowchart LR
     class E focus
 ```
 
-The embedder is the appearance model this phase trains. It crops each detected box out of the frame and turns it into a vector of 512 numbers. For now the detector is MOT17's public FRCNN boxes, and the bank and association come later.
+The embedder is the appearance model this phase trains. It crops each detected box out of the frame and turns it into a vector of 512 numbers. For now the detector is MOT17's public FRCNN boxes. The bank and association are Phase 3.
 
 ### What it does
 
@@ -265,6 +265,129 @@ Each model is scored on the people *it* never saw, which is a different set for 
 
 **What it changed.** With x1.0's cross-fit features, the association step's held-out check reads **98.0** average precision (93.2% precision, 96.8% recall) instead of a suspicious 100.
 
+## Phase 3: The tracker
+
+### Where it fits
+
+```mermaid
+flowchart LR
+    C["Current frame<br/>people, labeled"] --> K[("<b>Bank</b><br/>everyone seen so far")]
+    N["Next frame"] --> D["Detector"]
+    D -- boxes --> E["Embedder"]
+    E -- a vector per box --> M["<b>Association</b>"]
+    K -- candidates --> M
+    M --> L["Next frame<br/>people, labeled"]
+    M -- updates --> K
+    classDef focus stroke-width:3px,font-weight:bold
+    class K,M focus
+```
+
+This phase is the bank and the association step. The embedder from Phase 2 hands them one vector per box, and everything else they use is motion, position, and memory.
+
+### The bank
+
+Every person the tracker knows about is an entry in the bank:
+
+| Holds | How |
+|---|---|
+| Motion | a Kalman filter over the box's center, aspect ratio, and height, plus their velocities, which predicts where the box should be next frame |
+| Appearance | a running average of the person's vectors, plus up to four distinct views |
+| Where they were | the box they were last matched to |
+| State | *tentative* (new, unconfirmed), *active* (seen last frame), *occluded* (lost inside the frame), or *exited* (last seen at the edge, walking out) |
+
+Each frame, the tracker:
+
+1. **Retrieves** the likely candidates from the bank for every new box.
+2. **Scores** every (person, box) pair.
+3. **Matches** everyone in one assignment, and lets a box become a new person when nobody fits.
+4. **Writes** back only clean sightings: confident, and not overlapped by someone else.
+5. **Forgets** entries gone too long for their state: 5 s for an occluded person, 0.5 s for one who walked out of frame, since MOT17 gives returning people new IDs.
+
+### From hand-set rules to a learned matcher
+
+I started with scoring rules set by hand: appearance only counts where the motion model finds the position plausible, and a hidden person is only recalled if they look close enough. With the OSNet x0.5 features, those rules land at **51.8 HOTA and 123 ID switches**, level with DeepSORT on HOTA and 21 switches worse. Tuning them further moved HOTA by less than half a point.
+
+The rules were the ceiling. Each piece of evidence gets a fixed weight and a fixed cutoff, but the right weighting depends on the situation: after two seconds hidden, appearance should count more and position less, and in a crowd, overlap proves little. So I replaced the scoring step with a small network that learns the weighting from examples.
+
+**What it sees.** Each (person, box) pair is described by 22 numbers, which I'll call cues:
+
+| Group | Cues |
+|---|---|
+| Appearance | similarity to the person's best stored view and to their running average, plus each as a rank against same-frame pairs, the label-free trick from "Choosing the model" |
+| Position, against the motion prediction | overlap, center offset, size change, and corner offsets, all divided by the person's height, plus the Mahalanobis distance, meaning how surprising the box is given how uncertain the motion model is |
+| Position, against where they were | overlap with the box the person was last matched to |
+| Memory | seconds since last seen, state, how often they've been seen, detection confidence, and how crowded the box is |
+
+**What it is.** A multilayer perceptron (MLP) with two hidden layers and about 5,700 parameters, which turns the 22 cues into one probability: same person. The assignment step uses 1 minus that probability as the cost and matches everyone at once with the Hungarian method[^kuhn]. A pair below 0.5 is rejected, and an unmatched box becomes a new person.
+
+**What it learns from.** I ran the hand-set tracker over the training half with the cross-fit features from Phase 2 and recorded every pair it considered: **950,127 pairs**, 3.4% of them the same person. Each box takes the identity of the ground-truth box it overlaps (intersection over union, IoU, at least 0.5), and each bank entry the identity it has been matched to most often. So the network learns from the situations the tracker actually gets into, including its own mistakes[^learningtotrack]. On two training videos held out from its training, it recognizes same-person pairs with 96.5 average precision (91.1% precision, 98.2% recall).
+
+### The cue that mattered: where they were
+
+This is the part I'd point at first.
+
+The first learned matcher had 21 cues, everything above except "where they were". It beat DeepSORT on every overall number and lost on ID switches, 107 against 102. So I went through every switch and sorted it by what happened:
+
+| Why the ID changed | Learned, 21 cues | Learned, 22 cues (mean of 4 runs) | DeepSORT |
+|---|---|---|---|
+| **Swap:** took an ID that belonged to someone else | 44 | 40.0 | 36 |
+| **Flip back:** switched away, then back a moment later | 31 | 28.0 | 19 |
+| **Lost, then restarted** as a new ID | 31 | 28.5 | 41 |
+| Other | 2 | 3.0 | 6 |
+| **Total** | 108 | 99.5 | 102 |
+
+The bank does its job: it restarts people as new IDs 30% less often than DeepSORT does (28.5 against 41), which is the long-gap memory from the introduction working. What it loses is short-range. Swaps and flip-backs happen between two people who are both in view, with typical gaps of 0.03 to 0.25 s. Every position cue in the 21-cue matcher measured against the motion model's *prediction*, which drifts when someone slows down, turns, or goes undetected for a frame. None of them said where the person actually was.
+
+So I added one cue, the overlap with the box each person was last matched to. It cut ID switches from 107 to **98.3** on average over six training runs, below DeepSORT's 102, with HOTA unchanged.
+
+### Results
+
+On the validation half, with the same public detections and the same OSNet x0.5 features for every tracker that uses appearance:
+
+| Tracker | HOTA | AssA | IDF1 | ID switches | Matching time |
+|---|---|---|---|---|---|
+| SORT | 48.4 | 56.2 | 54.5 | 222 | 0.53 ms/frame |
+| ByteTrack | 49.4 | 57.7 | 56.2 | 198 | 0.79 ms/frame |
+| DeepSORT, calibrated cutoff | 51.9 | 63.7 | 60.6 | 102 | 2.76 ms/frame |
+| Mine, hand-set rules | 51.8 | 63.1 | 60.7 | 123 | 1.58 ms/frame |
+| Mine, learned, 21 cues | 52.6 ± 0.0 | 64.9 ± 0.1 | 61.8 ± 0.0 | 107 (106–108) | 4.49 ms/frame |
+| **Mine, learned, 22 cues** | **52.6 ± 0.1** | **64.8 ± 0.2** | **61.7 ± 0.1** | **98.3** (95–108) | 4.86 ms/frame |
+
+(Learned rows are the mean ± standard deviation over 3 and 6 training runs. The last four timings were measured back to back; SORT and ByteTrack are from Phase 1's sitting.)
+
+The final tracker beats DeepSORT by **0.7 HOTA, 1.1 AssA, and 1.1 IDF1**, and holds that lead on every run. It averages 3.7 fewer ID switches, but that part doesn't hold on every run: see [Limitations](#limitations). Matching costs 4.9 ms per frame, 1.8× DeepSORT's rules. Added to 4.0 ms of decoding and 5.4 ms of embedding (both measured in Phase 1 and 2), that's about 14 ms of the 33 ms budget, which leaves roughly 19 ms for a detector.
+
+That covers every promise from "How my tracker will be measured": HOTA first, the same features for DeepSORT, the learned scoring against the hand-set version of itself, repeated runs, and time next to accuracy.
+
+### What didn't work
+
+I tried six ways to push the ID switches down further. None survived:
+
+| Tried | Idea | Validation result | Verdict |
+|---|---|---|---|
+| Attention across pairs | a "context" model in which each pair's score sees its rivals before the assignment | 51.7 HOTA; 149, 379, and 167 ID switches over 3 runs | dropped |
+| On-policy recording | retrain on pairs recorded while the learned matcher drives the tracker, three rounds fixed in advance | attention: 126 to 296 ID switches; pairwise: 109 on average | dropped |
+| Competition margins | four cues for how clearly a pair beats its best rival | 112 ID switches on average | dropped |
+| Camera compensation | shift every prediction by the measured camera motion, as BoT-SORT does[^botsort] | 98.5 on average with it, 98.3 without, +0.15 HOTA, 24 ms per frame | off |
+| Seed ensembles | average the probabilities of five matchers | 103 and 96 ID switches | not adopted |
+| Hysteresis | a switch has to beat last frame's pairing by a set margin | 100.5 and 104.3 on average (margins 0.05 and 0.1), against 99.5 without | off |
+
+**The pattern.** Everything that looked at the *other* candidates made tracking worse. Who else is in the bank depends on the tracker's own earlier decisions, so evidence about rivals shifts as soon as the matcher's choices differ from the ones it was trained on. The attention model shows it most plainly: on held-out pairs it reached 94.6% precision against the pairwise matcher's 89.7%, and inside the tracker it produced up to 379 ID switches. Evidence about the pair itself, like where the person was, carried over.
+
+**Most of these were detours I could have skipped.** Five of the six compared effects of 3 to 10 ID switches using three runs each, when a single run swings by more than 10. Measuring that noise first would have ruled most of them out before they started. Camera compensation is the clearest case. It looked like it helped until six runs each showed it didn't, and for surveillance, where cameras don't move, it would do nothing anyway.
+
+## Limitations
+
+**ID switches beat DeepSORT on average, not every time.** Single training runs land anywhere from 95 to 108 switches, while DeepSORT stays at 102 to 103 however I nudge its cutoff. One flipped decision early in a video changes everything after it, and a learned matcher makes more close calls than fixed rules do.
+
+**The appearance model has met 45% of the validation people.** Its mAP is scored on unseen people only, but the tracking numbers include the 152 people who also walk through the training half. DeepSORT uses the same features, so the comparison is fair. The absolute numbers are probably a little flattered.
+
+**Hidden people aren't reported.** MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
+
+**No detector in the loop yet.** Every number here uses MOT17's public detections, so the real-time claim rests on adding up measured parts, not on timing the whole pipeline.
+
+**Re-entry is untested.** The bank can bring back someone who walked out and returned, but MOT17 gives returning people new IDs, so that mode is off in every number above.
+
 ## Usage
 
 Requires [uv](https://docs.astral.sh/uv/). On Windows and Linux, `uv sync` installs PyTorch built for CUDA 13.0.
@@ -323,6 +446,17 @@ uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osne
 uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x0_5_foldB/last.pt --model osnet_x0_5_crossfit --sequences MOT17-04,MOT17-05,MOT17-11
 ```
 
+### Tracker
+
+```bash
+uv run python -m reidtrack --embeddings osnet_x0_5_mot17
+uv run python -m reidtrack.association.train --embeddings osnet_x0_5_crossfit --name pairwise_osnet_x0_5
+uv run python -m reidtrack --embeddings osnet_x0_5_mot17 --reranker data/weights/reranker/pairwise_osnet_x0_5.pt
+```
+
+- **`python -m reidtrack`** runs my tracker on the validation half, with the hand-set rules unless a `--reranker` is given. `--set key=value` changes any setting, for example `--set hysteresis=0.05` or `--set emit_hidden=0.6`. `--camera` turns on camera compensation, and `--interpolate FRAMES` fills short gaps after tracking, which makes the result offline.
+- **`association.train`** records candidate pairs from the tracker on the training half, trains the learned matcher on them, and reports the held-out check. `--model context` trains the attention version, and `--rounds 3` adds on-policy rounds.
+
 ### Evaluation
 
 ```bash
@@ -378,4 +512,6 @@ Apache-2.0; see [LICENSE](LICENSE). `src/reidtrack/retrieval/osnet.py` is adapte
 [^resnet]: K. He, X. Zhang, S. Ren, J. Sun. Deep Residual Learning for Image Recognition. *CVPR*, 2016. [arXiv:1512.03385](https://arxiv.org/abs/1512.03385).
 [^bagoftricks]: H. Luo, Y. Gu, X. Liao, S. Lai, W. Jiang. Bag of Tricks and A Strong Baseline for Deep Person Re-identification. *CVPR Workshops*, 2019. [arXiv:1903.07071](https://arxiv.org/abs/1903.07071).
 [^triplet]: A. Hermans, L. Beyer, B. Leibe. In Defense of the Triplet Loss for Person Re-Identification. [arXiv:1703.07737](https://arxiv.org/abs/1703.07737), 2017.
+[^learningtotrack]: Y. Xiang, A. Alahi, S. Savarese. Learning to Track: Online Multi-Object Tracking by Decision Making. *ICCV*, 2015.
+[^botsort]: N. Aharon, R. Orfaig, B.-Z. Bobrovsky. BoT-SORT: Robust Associations Multi-Pedestrian Tracking. [arXiv:2206.14651](https://arxiv.org/abs/2206.14651), 2022.
 [^erasing]: Z. Zhong, L. Zheng, G. Kang, S. Li, Y. Yang. Random Erasing Data Augmentation. *AAAI*, 2020. [arXiv:1708.04896](https://arxiv.org/abs/1708.04896).
