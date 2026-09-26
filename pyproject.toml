@@ -17,6 +17,12 @@ dependencies = [
     "trackeval @ git+https://github.com/JonathonLuiten/TrackEval@12c8791b303e0a0b50f753af204249e622d0281a",
 ]
 
+[project.optional-dependencies]
+detect = [
+    "rfdetr>=1.11,<2",
+    "transformers>=5.1,<6",
+]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 
