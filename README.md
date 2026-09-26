@@ -2,6 +2,10 @@
 
 <!-- Lead with the current output: a sample, then the demo. Write once the project is done. -->
 
+![The tracker on MOT17-08](docs/figures/demo_MOT17-08.webp)
+
+Seen above: The tracker on MOT17-08, a test video that no model in this project trained on, with my fine-tuned detector, appearance model, and matcher. Each box carries the ID the tracker gave that person. Footage from MOT17 [[2]](#ref-2), CC BY-NC-SA 3.0.
+
 ```mermaid
 flowchart LR
     C["Current frame<br/>people, labeled"] --> K[("Bank<br/>everyone seen so far")]
@@ -451,12 +455,60 @@ The matcher handles skipped frames without ever training on them. Association ba
 
 So training the matcher on skipped frames has little to win, at most those 1.6 AssA points. Processing every 3rd frame of a 30 fps camera also triples the time budget per frame to about 100 ms, which is room for a bigger detector on a small device.
 
+## Phase 5: The detector
+
+Every result so far used MOT17's public detections, which only exist for MOT17's own videos. To run on any other footage, the tracker needs a detector of its own. Ultralytics YOLO is off the table because its AGPL license would pull this whole repository into AGPL, so I compared two Apache-2.0 families: D-FINE, through Hugging Face's `transformers`, and RF-DETR, through its own package.
+
+I ran each off-the-shelf model on the validation halves of MOT17-04, a crowd seen from above, and MOT17-09, and scored the raw boxes the way Phase 1 scored the untracked detections: a new ID for every box, so only detection accuracy counts.
+
+| Detector | DetA | ms per frame |
+|---|---|---|
+| Public FRCNN (MOT17's boxes, for reference) | 46.2 | |
+| D-FINE small / medium / large | 43.1 / 45.0 / 44.2 | 39.3 / 47.9 / 57.6 |
+| RF-DETR nano / small / medium | 39.3 / 43.8 / 43.7 | 27.4 / 28.5 / 34.0 |
+
+(Each detector at its best score cutoff between 0.3 and 0.6. The times include resizing each frame and, for D-FINE, about 10 ms of preprocessing on the CPU that could move to the GPU.)
+
+Neither family beats MOT17's own boxes out of the box. Both learned on everyday photos and shrink each frame to 512 or 640 pixels, which loses the smallest people in MOT17-04's crowd. I chose RF-DETR small for speed: 43.8 DetA at 28.5 ms, 1.2 points behind the most accurate D-FINE and 1.7× faster.
+
+### Fine-tuning it on MOT17
+
+This is how we fine-tuned it. I converted MOT17's training half into a COCO-format person dataset, with pedestrians and static people as one "person" class and every box that shows at least 10% of its person. The first three quarters of each video's training half train the detector, and the last quarter decides when to stop: training ends once three epochs pass without improvement, with a cap of 30. The validation half stays out of it entirely.
+
+Training stopped on its own after 52 minutes. Its mAP on the held-out quarter rose from 50.6 after the first epoch to 57.8 at its best.
+
+| Detector, same two videos | DetA | ms per frame |
+|---|---|---|
+| Public FRCNN | 46.2 | |
+| RF-DETR small, off the shelf | 43.8 | 30.4 |
+| RF-DETR small, fine-tuned | **57.8** | 28.8 |
+
+Fine-tuning added **14.0 DetA** at the same speed, which puts it 11.6 above MOT17's own boxes. The honest caveat: it trained on the first half of these same videos, so it knows these cameras, scenes, and people. On new footage, like a bus, the gain will be smaller.
+
+### Tracking with its boxes
+
+On the validation half, with every tracker using the fine-tuned detector's boxes and the same OSNet x0.5 features:
+
+| Tracker | HOTA | DetA | AssA | IDF1 | ID switches |
+|---|---|---|---|---|---|
+| DeepSORT, public boxes | 51.9 | 42.4 | 63.7 | 60.6 | 102 |
+| Mine, public boxes | 52.6 | 42.9 | 64.8 | 61.7 | 98.3 |
+| DeepSORT, fine-tuned RF-DETR boxes | 51.8 | 47.6 | 57.3 | 63.0 | 206 |
+| **Mine, fine-tuned RF-DETR boxes** | **53.9** | **48.3** | **61.0** | **65.6** | **173** |
+
+(My rows with the fine-tuned detector come from one trained matcher, so their ID switches carry the usual jitter of about 10.)
+
+The better detector helps my tracker and not DeepSORT: I gain 1.3 HOTA, DeepSORT loses 0.1, and my lead grows from 0.7 to **2.1 HOTA**, with 3.7 more AssA, 2.6 more IDF1, and 16% fewer ID switches. Both trackers make more ID switches than before, and both lose AssA, because the detector now finds harder, partly hidden people that the public boxes missed, and each of them is one more chance to swap. My matcher and its score thresholds still come from the public boxes, whose scores behave differently, so this is a lower bound on what the pair can do.
+
+Timed piece by piece, one frame costs 4.0 ms to decode, 28.8 ms to detect, 5.4 ms to embed, and 3.3 ms to match, about 42 ms or 24 frames per second. I haven't timed the whole pipeline in one run yet. Processing every 2nd frame, which Phase 4 showed costs little, fits inside a 30 fps camera's budget.
+
 ## Limitations
 
 - ID switches beat DeepSORT on average, not every time. Single training runs land anywhere from 95 to 108 switches, while DeepSORT stays at 102 to 103 however I nudge its cutoff. One flipped decision early in a video changes everything after it, and a learned matcher makes more close calls than fixed rules do.
 - The appearance model has met 45% of the validation people. Its mAP only counts unseen people, but the tracking numbers include the 152 people who also walk through the training half. DeepSORT uses the same features, so the comparison stays fair. The absolute numbers probably look a little better than they should.
 - The tracker doesn't report hidden people. MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
-- No detector runs in the loop yet. Every number here uses MOT17's public detections, so the real-time claim rests on adding up measured parts, not on timing the whole pipeline.
+- I haven't timed the whole pipeline in one run. The parts add up to about 42 ms per frame with the fine-tuned detector (Phase 5), so full speed at 30 fps needs a faster detector or every 2nd frame.
+- The fine-tuned detector learned on the same seven videos it's scored on, from their first halves. I haven't tested its gain on footage from other cameras, like a bus.
 - Covering the head and shoulders more than halves recognition. Blocking the top 40% of a person drops mAP from 82.3 to 35.4 on the queries still visible enough to count (Phase 4), and a random 25 to 40% patch drops it from 81.2 to 55.1. Blocking augmentation helps against the random patch and the blocked head, not against blocks from below or the side.
 - I haven't tested lighting drift inside the tracker. The stress test changes single sightings. A whole video whose light drifts as the sun moves, or jumps in a tunnel, hasn't gone through the tracker yet.
 - I haven't tested re-entry. The bank can bring back someone who walked out and returned, but MOT17 gives returning people new IDs, so that mode stays off in every number above.
@@ -530,6 +582,22 @@ uv run python -m reidtrack --embeddings osnet_x0_5_mot17 --reranker data/weights
 
 - `python -m reidtrack` runs my tracker on the validation half, with the hand-set rules unless you give it a `--reranker`. `--set key=value` changes any setting, for example `--set hysteresis=0.05` or `--set emit_hidden=0.6`. `--camera` turns on camera compensation, `--interpolate FRAMES` fills short gaps after tracking, which makes the result offline, and `--stride N` tracks every N-th frame only. The baselines take `--stride` too.
 - `association.train` records candidate pairs from the tracker on the training half, trains the learned matcher on them, and reports the held-out check. `--model context` trains the attention version, and `--rounds 3` adds on-policy rounds.
+
+### Detector
+
+```bash
+uv sync --extra detect
+uv run python -m reidtrack.detection.coco
+uv run python -m reidtrack.detection.finetune
+uv run python -m reidtrack.detection.detect
+uv run python -m reidtrack.retrieval.cache --weights data/weights/retriever/osnet_x0_5_mot17/last.pt --model osnet_x0_5_mot17 --det RFDETR
+uv run python -m reidtrack --det RFDETR --embeddings osnet_x0_5_mot17 --reranker data/weights/reranker/pairwise_osnet_x0_5.pt
+```
+
+- `detection.coco` writes the training half as a COCO-format person dataset from hard links, so it takes no extra disk space.
+- `detection.finetune` fine-tunes RF-DETR small until it plateaus. On Windows, set `PYTHONUTF8=1` first, since its progress display needs UTF-8.
+- `detection.detect` writes the fine-tuned detector's boxes as `det/RFDETR.txt` next to MOT17's own, so every command that takes `--det` can use them. `--subset test --sequences MOT17-08` covers a test video.
+- `python -m reidtrack --sequence MOT17-08` tracks one whole video, test videos included, without scoring. `reidtrack.viz` then renders it; the clip at the top of this page came from `reidtrack.viz MOT17-08 --results runs/demo_MOT17-08/MOT17-08.txt --scale 0.5`.
 
 ### Evaluation
 
