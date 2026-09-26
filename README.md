@@ -52,6 +52,12 @@ flowchart LR
 
 *Seen above: A diagram of the tracker's pipeline, frame by frame.*
 
+- The detector, RF-DETR small fine-tuned on MOT17, puts a box around every person in the next frame.
+- The embedder, OSNet x0.5, turns each confident box into a vector of 512 numbers that describes how that person looks.
+- The bank holds everyone seen so far: where they're heading, how they look, where the tracker last matched them, and whether they're in view, hidden, or gone.
+- Association scores every pair of known person and new box with the learned matcher, then assigns everyone at once. A confident box that matches no one starts a new person.
+- Association writes the clean sightings back to the bank, so the next frame starts from this frame's labeled people.
+
 ### Data and evaluation
 
 MOT17 ships every video three times, once per public detector, with out-of-order detection files and boxes that run past the image border. I deduplicated and cleaned it, then split each training video in time, first half for training and second half for validation, following CenterTrack [[8]](#ref-8). Every number here comes from the validation half. Before trusting the scorer, TrackEval [[5]](#ref-5), I checked that it gives the ground truth a perfect 100 and raw detections with no tracking only 5.0 HOTA.
