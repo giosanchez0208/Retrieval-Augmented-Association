@@ -11,6 +11,7 @@ who are annotated but hidden (visibility < 0.1) are dashed.
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 from pathlib import Path
 
@@ -53,7 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scale", type=float, default=1.0, help="output scale, e.g. 0.5")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
     parser.add_argument("--out", type=Path, help="output file (default: runs/viz/...)")
+    parser.add_argument("--timing", type=Path, help="timing.csv from reidtrack.pipeline: show each frame's stage times")
     args = parser.parse_args(argv)
+    timing = {}
+    if args.timing:
+        with open(args.timing, newline="") as f:
+            timing = {int(r["frame"]): r for r in csv.DictReader(f)}
 
     seq = Mot17(args.root).sequence(args.sequence)
     if args.frame is not None:
@@ -89,7 +95,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"cannot read {seq.image_path(frame)}", file=sys.stderr)
             return 1
         caption = f"{seq.name}  ·  frame {frame}  ·  {(frame - 1) / seq.info.frame_rate:.2f} s"
-        figure = renderer.render(image, boxes[lo:hi], caption, note=label)
+        note = label
+        if frame in timing:
+            r = timing[frame]
+            note = (f"decode {float(r['decode']):.1f}  ·  detect {float(r['detect']):.1f}  ·  embed {float(r['embed']):.1f}"
+                    f"  ·  track {float(r['track']):.1f}  ·  total {float(r['total']):.1f} ms")
+        figure = renderer.render(image, boxes[lo:hi], caption, note=note)
         if writer is None:
             cv2.imwrite(str(out), figure)
         else:
