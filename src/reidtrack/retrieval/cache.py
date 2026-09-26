@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reidtrack.data.mot17 import DETECTORS, Mot17
+from reidtrack.data.mot17 import ALL_DETECTORS, Mot17
 from reidtrack.report import format_table
 
 
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--width", default="x1_0")
     parser.add_argument("--model", help="cache name (default: weights file stem)")
-    parser.add_argument("--det", choices=DETECTORS, default="FRCNN")
+    parser.add_argument("--det", choices=ALL_DETECTORS, default="FRCNN")
     parser.add_argument("--subset", choices=("train", "test"), default="train")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
     parser.add_argument("--cpu", action="store_true")

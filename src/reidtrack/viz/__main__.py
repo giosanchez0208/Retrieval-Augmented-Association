@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 from reidtrack.data.mot import load_tracks
-from reidtrack.data.mot17 import DETECTORS, Mot17
+from reidtrack.data.mot17 import ALL_DETECTORS, Mot17
 from reidtrack.data.splits import SPLITS
 from reidtrack.viz.render import NEUTRAL, Box, FigureRenderer, id_color
 
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("sequence", help="e.g. MOT17-02")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--gt", action="store_true", help="ground-truth pedestrians")
-    source.add_argument("--det", choices=DETECTORS, help="public detections")
+    source.add_argument("--det", choices=ALL_DETECTORS, help="public detections, or RFDETR once written")
     source.add_argument("--results", type=Path, help="tracker output (MOT format)")
     frames = parser.add_mutually_exclusive_group()
     frames.add_argument("--split", choices=SPLITS, help="render the frames of a split")

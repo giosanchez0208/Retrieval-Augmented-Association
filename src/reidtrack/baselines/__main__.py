@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from reidtrack.baselines import ByteTrack, DeepSort, Sort
-from reidtrack.data.mot17 import DETECTORS
+from reidtrack.data.mot17 import ALL_DETECTORS
 from reidtrack.data.splits import SPLITS
 from reidtrack.eval.latency import StageTimer
 from reidtrack.eval.metrics import Scores, evaluate
@@ -25,7 +25,7 @@ from reidtrack.track.runner import run_split, save_results
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m reidtrack.baselines", description="Run a baseline tracker.")
-    parser.add_argument("--det", choices=DETECTORS, default="FRCNN", help="public detections")
+    parser.add_argument("--det", choices=ALL_DETECTORS, default="FRCNN", help="public detections, or RFDETR once written")
     parser.add_argument("--split", choices=SPLITS, default="val_half")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"), help="prepared dataset root")
     parser.add_argument("--runs", type=Path, default=Path("runs"), help="output folder")

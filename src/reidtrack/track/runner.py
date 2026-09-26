@@ -32,8 +32,12 @@ def run_split(
     embeddings: str | None = None,
     camera: bool = False,
     stride: int = 1,
+    sequences: list[str] | None = None,
 ) -> dict[str, Tracks]:
     """Track every sequence of ``split``; a fresh tracker is made per sequence.
+
+    ``sequences`` names the videos to track instead, from either subset, over the
+    frames of ``split``; "train" covers a whole video, which suits test videos.
 
     ``stride`` feeds the tracker every n-th frame only, as an edge device that skips
     frames would, and tells it the lower frame rate. Camera motion is not composed across
@@ -51,7 +55,7 @@ def run_split(
         raise ValueError("camera motion is cached per frame; use stride 1 with camera")
     data = Mot17(root)
     results = {}
-    for name in split_sequences(split, root):
+    for name in sequences or split_sequences(split, root):
         seq = data.sequence(name)
         rng = seq.frames(split)
         det = seq.load_det(detector)

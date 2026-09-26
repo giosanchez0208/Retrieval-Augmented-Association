@@ -17,7 +17,9 @@ from pathlib import Path
 from reidtrack.data import mot
 from reidtrack.data.splits import FrameRange, frame_range
 
-DETECTORS = ("DPM", "FRCNN", "SDP")
+DETECTORS = ("DPM", "FRCNN", "SDP")  # the public detections MOT17 ships
+OWN_DETECTORS = ("RFDETR",)  # written by reidtrack.detection.detect into det/<name>.txt
+ALL_DETECTORS = DETECTORS + OWN_DETECTORS
 
 TRAIN_SEQUENCES = ("MOT17-02", "MOT17-04", "MOT17-05", "MOT17-09", "MOT17-10", "MOT17-11", "MOT17-13")
 TEST_SEQUENCES = ("MOT17-01", "MOT17-03", "MOT17-06", "MOT17-07", "MOT17-08", "MOT17-12", "MOT17-14")
@@ -57,8 +59,8 @@ class Sequence:
         return gt if split is None else gt.in_frames(*self._bounds(split))
 
     def load_det(self, detector: str = "FRCNN", split: str | None = None) -> mot.Detections:
-        if detector not in DETECTORS:
-            raise ValueError(f"unknown detector {detector!r}; expected one of {DETECTORS}")
+        if detector not in ALL_DETECTORS:
+            raise ValueError(f"unknown detector {detector!r}; expected one of {ALL_DETECTORS}")
         det = mot.load_det(self.root / "det" / f"{detector}.txt")
         return det if split is None else det.in_frames(*self._bounds(split))
 

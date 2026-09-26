@@ -15,7 +15,9 @@ import json
 import sys
 from pathlib import Path
 
-from reidtrack.data.mot17 import DETECTORS
+import numpy as np
+
+from reidtrack.data.mot17 import ALL_DETECTORS
 from reidtrack.data.splits import SPLITS
 from reidtrack.eval.latency import StageTimer
 from reidtrack.eval.metrics import Scores, evaluate
@@ -39,7 +41,7 @@ def parse_overrides(pairs: list[str]) -> TrackerConfig:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m reidtrack", description="Run the retrieval-augmented tracker.")
     parser.add_argument("--embeddings", default="osnet_x1_0_msmt17", help="feature cache name")
-    parser.add_argument("--det", choices=DETECTORS, default="FRCNN")
+    parser.add_argument("--det", choices=ALL_DETECTORS, default="FRCNN")
     parser.add_argument("--camera", action="store_true", help="compensate camera motion (cached)")
     parser.add_argument("--reranker", type=Path, help="learned reranker checkpoint (default: hand-set costs)")
     parser.add_argument("--interpolate", type=int, default=0, metavar="FRAMES",
@@ -48,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="track every n-th frame only, as an edge device skipping frames; the skipped "
                              "frames are filled in by interpolation for scoring")
     parser.add_argument("--split", choices=SPLITS, default="val_half")
+    parser.add_argument("--sequence", help="track this one whole video instead, test videos included, without scoring")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a TrackerConfig field")
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--runs", type=Path, default=Path("runs"))
@@ -62,6 +65,15 @@ def main(argv: list[str] | None = None) -> int:
         reranker = PairwiseReranker.load(args.reranker)
     make = lambda info: RetrievalTracker(info.width, info.height, info.frame_rate, config, reranker)  # noqa: E731
     timer = StageTimer(warmup=10)
+    if args.sequence:
+        results = run_split(make, "train", args.det, args.root, timer, args.embeddings, args.camera, args.stride,
+                            sequences=[args.sequence])
+        out = args.runs / (args.name or f"raa_{args.sequence}")
+        save_results(results, out)
+        tracks = results[args.sequence]
+        print(f"{args.sequence}: {len(np.unique(tracks.track_id))} IDs over {len(np.unique(tracks.frame))} frames, "
+              f"{timer.summary()['track']['mean']:.2f} ms/frame for tracking -> {out}")
+        return 0
     results = run_split(make, args.split, args.det, args.root, timer, args.embeddings, args.camera, args.stride)
     if args.stride > 1:
         args.interpolate = max(args.interpolate, args.stride - 1)
