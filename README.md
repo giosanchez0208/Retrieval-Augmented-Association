@@ -4,7 +4,7 @@
 
 ![The tracker on MOT17-08](docs/figures/demo_MOT17-08.webp)
 
-Seen above: The tracker on MOT17-08, a test video that no model in this project trained on, with my fine-tuned detector, appearance model, and matcher. Each box carries the ID the tracker gave that person. Footage from MOT17 [[2]](#ref-2), CC BY-NC-SA 3.0.
+Seen above: The tracker on MOT17-08, a test video that no model in this project trained on, with my fine-tuned detector, appearance model, and matcher. Each box carries the ID the tracker gave that person, and the bottom right shows how long each stage took on that frame, in milliseconds, on my laptop's RTX 4050. Footage from MOT17 [[2]](#ref-2), CC BY-NC-SA 3.0.
 
 ```mermaid
 flowchart LR
@@ -500,14 +500,24 @@ On the validation half, with every tracker using the fine-tuned detector's boxes
 
 The better detector helps my tracker and not DeepSORT: I gain 1.3 HOTA, DeepSORT loses 0.1, and my lead grows from 0.7 to **2.1 HOTA**, with 3.7 more AssA, 2.6 more IDF1, and 16% fewer ID switches. Both trackers make more ID switches than before, and both lose AssA, because the detector now finds harder, partly hidden people that the public boxes missed, and each of them is one more chance to swap. My matcher and its score thresholds still come from the public boxes, whose scores behave differently, so this is a lower bound on what the pair can do.
 
-Timed piece by piece, one frame costs 4.0 ms to decode, 28.8 ms to detect, 5.4 ms to embed, and 3.3 ms to match, about 42 ms or 24 frames per second. I haven't timed the whole pipeline in one run yet. Processing every 2nd frame, which Phase 4 showed costs little, fits inside a 30 fps camera's budget.
+Timed piece by piece on the validation half, one frame costs 4.0 ms to decode, 28.8 ms to detect, 5.4 ms to embed, and 3.3 ms to match, about 42 ms. Running the whole pipeline in one go on MOT17-08, the crowded street in the clip at the top, costs more:
+
+| Stage | ms per frame |
+|---|---|
+| Decode on the GPU | 4.3 |
+| Detect | 28.4 |
+| Crop and embed | 21.2 |
+| Track | 3.9 |
+| **Total** | **57.7**, 17 frames per second |
+
+Embedding costs four times the earlier estimate because it scales with the crowd. MOT17-08 averages about 45 boxes per frame, including the low-confidence ones the tracker keeps for its second pass, against roughly 15 in the validation videos, and the appearance model embeds every one of them. Processing every 3rd frame, which Phase 4 showed costs little, fits a 30 fps camera's budget with room to spare.
 
 ## Limitations
 
 - ID switches beat DeepSORT on average, not every time. Single training runs land anywhere from 95 to 108 switches, while DeepSORT stays at 102 to 103 however I nudge its cutoff. One flipped decision early in a video changes everything after it, and a learned matcher makes more close calls than fixed rules do.
 - The appearance model has met 45% of the validation people. Its mAP only counts unseen people, but the tracking numbers include the 152 people who also walk through the training half. DeepSORT uses the same features, so the comparison stays fair. The absolute numbers probably look a little better than they should.
 - The tracker doesn't report hidden people. MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
-- I haven't timed the whole pipeline in one run. The parts add up to about 42 ms per frame with the fine-tuned detector (Phase 5), so full speed at 30 fps needs a faster detector or every 2nd frame.
+- The whole pipeline runs at 17 frames per second on a crowded street (57.7 ms per frame, Phase 5). Full speed at 30 fps needs a faster detector, fewer embedded boxes, or every 3rd frame.
 - The fine-tuned detector learned on the same seven videos it's scored on, from their first halves. I haven't tested its gain on footage from other cameras, like a bus.
 - Covering the head and shoulders more than halves recognition. Blocking the top 40% of a person drops mAP from 82.3 to 35.4 on the queries still visible enough to count (Phase 4), and a random 25 to 40% patch drops it from 81.2 to 55.1. Blocking augmentation helps against the random patch and the blocked head, not against blocks from below or the side.
 - I haven't tested lighting drift inside the tracker. The stress test changes single sightings. A whole video whose light drifts as the sun moves, or jumps in a tunnel, hasn't gone through the tracker yet.
@@ -597,7 +607,8 @@ uv run python -m reidtrack --det RFDETR --embeddings osnet_x0_5_mot17 --reranker
 - `detection.coco` writes the training half as a COCO-format person dataset from hard links, so it takes no extra disk space.
 - `detection.finetune` fine-tunes RF-DETR small until it plateaus. On Windows, set `PYTHONUTF8=1` first, since its progress display needs UTF-8.
 - `detection.detect` writes the fine-tuned detector's boxes as `det/RFDETR.txt` next to MOT17's own, so every command that takes `--det` can use them. `--subset test --sequences MOT17-08` covers a test video.
-- `python -m reidtrack --sequence MOT17-08` tracks one whole video, test videos included, without scoring. `reidtrack.viz` then renders it; the clip at the top of this page came from `reidtrack.viz MOT17-08 --results runs/demo_MOT17-08/MOT17-08.txt --scale 0.5`.
+- `python -m reidtrack --sequence MOT17-08` tracks one whole video from cached detections, test videos included, without scoring.
+- `python -m reidtrack.pipeline MOT17-08` runs the whole chain on raw frames, decode, detect, embed, and track, and writes the tracks plus each frame's stage times. The clip at the top of this page came from it and `reidtrack.viz MOT17-08 --results runs/pipeline_MOT17-08/MOT17-08.txt --timing runs/pipeline_MOT17-08/timing.csv --scale 0.5`.
 
 ### Evaluation
 
