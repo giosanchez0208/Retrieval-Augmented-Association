@@ -1,18 +1,21 @@
 """The whole tracker on raw frames: decode, detect, crop and embed, track, timed per frame.
 
     python -m reidtrack.pipeline MOT17-08
+    python -m reidtrack.pipeline --split val_half      # every training video's validation half, scored
 
 Frames are decoded on the GPU and stay there for the detector and the appearance model.
 The detector runs in float16 as a TorchScript graph, and only boxes confident enough for
 the tracker to use their appearance get embedded.
-Writes the tracks in MOT format and a CSV of each frame's stage times (ms) to
-runs/pipeline_<sequence>/, which ``reidtrack.viz --timing`` can print under each frame.
+Writes the tracks in MOT format and a CSV of each frame's stage times (ms) per video,
+which ``reidtrack.viz --timing`` can print under each frame. With a scored split, the
+tracker starts cold at the split's first frame, like every other tracker here.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 import time
 from collections import Counter
@@ -33,7 +36,6 @@ class Pipeline:
         from reidtrack.association.reranker import load_reranker
         from reidtrack.retrieval.embedder import Embedder
         from reidtrack.retrieval.graphs import GraphedForward
-        from reidtrack.tracker import RetrievalTracker, TrackerConfig
 
         self.detector = RFDETRSmall(pretrain_weights=str(detector), device="cuda")
         if fast_detector:  # 27.7 -> 12.7 ms on MOT17-08, with 99.1% overlap between the boxes
@@ -45,7 +47,14 @@ class Pipeline:
         self.model = embed.model.half()
         self.graphed = GraphedForward(self.model, (3, *self.input_size), buckets=(8, 16, 32, 64))
         self.dim = embed.dim
-        self.tracker = RetrievalTracker(width, height, frame_rate, TrackerConfig(), load_reranker(reranker))
+        self.reranker = load_reranker(reranker)
+        self.reset(width, height, frame_rate)
+
+    def reset(self, width: int, height: int, frame_rate: float) -> None:
+        """A fresh tracker for a new video; the models stay loaded."""
+        from reidtrack.tracker import RetrievalTracker, TrackerConfig
+
+        self.tracker = RetrievalTracker(width, height, frame_rate, TrackerConfig(), self.reranker)
 
     @torch.inference_mode()
     def _embed(self, image: torch.Tensor, xyxy: np.ndarray) -> np.ndarray:
@@ -91,40 +100,66 @@ class Pipeline:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m reidtrack.pipeline", description=__doc__.split("\n\n")[0])
-    parser.add_argument("sequence", help="a MOT17 video, training or test, e.g. MOT17-08")
+    parser.add_argument("sequences", nargs="*", help="MOT17 videos, training or test (default: the split's videos)")
+    parser.add_argument("--split", default="train",
+                        help="frames to run: train (whole videos, unscored), or train_half / val_half (scored)")
     parser.add_argument("--detector", type=Path,
                         default=Path("data/weights/detectors/rf-detr-small-mot17/checkpoint_best_total.pth"))
     parser.add_argument("--embedder", type=Path, default=Path("data/weights/retriever/osnet_x0_5_mot17/last.pt"))
     parser.add_argument("--reranker", type=Path, default=Path("data/weights/reranker/pairwise_osnet_x0_5_iou_last.pt"))
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
-    parser.add_argument("--out", type=Path, help="default: runs/pipeline_<sequence>")
+    parser.add_argument("--out", type=Path, help="default: runs/pipeline_<sequence or split>")
     parser.add_argument("--plain-detector", action="store_true", help="run the detector in float32 without compiling")
     args = parser.parse_args(argv)
 
     from reidtrack.data.mot import Tracks, save_tracks
     from reidtrack.data.mot17 import Mot17
+    from reidtrack.eval.metrics import Scores, evaluate, split_sequences
+    from reidtrack.report import format_table
 
-    seq = Mot17(args.root).sequence(args.sequence)
-    pipe = Pipeline(args.detector, args.embedder, args.reranker, seq.info.width, seq.info.height, seq.info.frame_rate,
-                    fast_detector=not args.plain_detector)
-    out = args.out or Path("runs") / f"pipeline_{seq.name}"
+    scored = args.split != "train"
+    names = args.sequences or split_sequences(args.split, args.root)
+    if not names:
+        parser.error("name a video, or pick a scored split")
+    data = Mot17(args.root)
+    out = args.out or Path("runs") / f"pipeline_{names[0] if len(names) == 1 and not scored else args.split}"
     out.mkdir(parents=True, exist_ok=True)
-    rows, frames, ids, boxes, scores = [], [], [], [], []
-    for frame in range(1, seq.info.length + 1):
-        (i, b, s), times = pipe(seq.image_path(frame).read_bytes())
-        rows.append({"frame": frame, **{k: round(times[k], 2) for k in STAGES}, "total": round(sum(times.values()), 2)})
-        frames.append(np.full(len(i), frame, dtype=np.int32)); ids.append(i); boxes.append(b); scores.append(s)
-    save_tracks(out / f"{seq.name}.txt", Tracks(frame=np.concatenate(frames), track_id=np.concatenate(ids).astype(np.int32),
-                                                xyxy=np.concatenate(boxes).astype(np.float32).reshape(-1, 4),
-                                                score=np.concatenate(scores).astype(np.float32)))
-    with open(out / "timing.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["frame", *STAGES, "total"])
-        writer.writeheader()
-        writer.writerows(rows)
-    steady = rows[10:]  # the first frames include warm-up
-    means = {k: np.mean([r[k] for r in steady]) for k in (*STAGES, "total")}
-    print(f"{seq.name}: {len(np.unique(np.concatenate(ids)))} IDs over {seq.info.length} frames; ms per frame after "
-          f"warm-up: " + ", ".join(f"{k} {v:.1f}" for k, v in means.items()) + f" ({1e3 / means['total']:.0f} fps) -> {out}")
+    pipe, results, steady = None, {}, []
+    for name in names:
+        seq = data.sequence(name)
+        rng = seq.frames(args.split)
+        if pipe is None:
+            pipe = Pipeline(args.detector, args.embedder, args.reranker, seq.info.width, seq.info.height,
+                            seq.info.frame_rate, fast_detector=not args.plain_detector)
+        else:
+            pipe.reset(seq.info.width, seq.info.height, seq.info.frame_rate)
+        rows, frames, ids, boxes, scores = [], [], [], [], []
+        for frame in range(rng.first, rng.last + 1):
+            (i, b, s), times = pipe(seq.image_path(frame).read_bytes())
+            rows.append({"frame": frame, **{k: round(times[k], 2) for k in STAGES}, "total": round(sum(times.values()), 2)})
+            frames.append(np.full(len(i), frame, dtype=np.int32)); ids.append(i); boxes.append(b); scores.append(s)
+        results[name] = Tracks(frame=np.concatenate(frames), track_id=np.concatenate(ids).astype(np.int32),
+                               xyxy=np.concatenate(boxes).astype(np.float32).reshape(-1, 4),
+                               score=np.concatenate(scores).astype(np.float32))
+        save_tracks(out / f"{name}.txt", results[name])
+        with open(out / f"{name}_timing.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["frame", *STAGES, "total"])
+            writer.writeheader()
+            writer.writerows(rows)
+        steady += rows[10:]  # the first frames of each video include warm-up
+        mean = np.mean([r["total"] for r in rows[10:]])
+        print(f"{name}: {len(np.unique(results[name].track_id))} IDs over {len(rows)} frames, {mean:.1f} ms per frame",
+              flush=True)
+    means = {k: float(np.mean([r[k] for r in steady])) for k in (*STAGES, "total")}
+    print("ms per frame after warm-up: " + ", ".join(f"{k} {v:.1f}" for k, v in means.items())
+          + f" ({1e3 / means['total']:.0f} fps) -> {out}")
+    if scored:
+        ev = evaluate(results, args.split, args.root)
+        (out / "scores.json").write_text(json.dumps({"tracker": "pipeline", "split": args.split,
+                                                     "ms_per_frame": means, **ev.to_dict()}, indent=2) + "\n")
+        print(format_table(["sequence", *Scores.HEADERS], [[n, *s.row()] for n, s in ev.sequences.items()],
+                           caption=f"MOT17 {args.split}, the whole pipeline on raw frames",
+                           footer=[["combined", *ev.combined.row()]]))
     return 0
 
 

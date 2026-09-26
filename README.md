@@ -494,9 +494,10 @@ On the validation half, with every tracker using the fine-tuned detector's boxes
 | DeepSORT, public boxes | 51.9 | 42.4 | 63.7 | 60.6 | 102 |
 | Mine, public boxes | 52.6 | 42.9 | 64.8 | 61.7 | 98.3 |
 | DeepSORT, fine-tuned RF-DETR boxes | 51.8 | 47.6 | 57.3 | 63.0 | 206 |
-| **Mine, fine-tuned RF-DETR boxes** | **53.9** | **48.3** | **61.0** | **65.6** | **173** |
+| Mine, fine-tuned RF-DETR boxes | 53.9 | 48.3 | 61.0 | 65.6 | 173 |
+| **Mine, the whole pipeline as deployed** | **54.3** | **48.1** | **62.0** | **65.9** | **162** |
 
-(My rows with the fine-tuned detector come from one trained matcher, so their ID switches carry the usual jitter of about 10.)
+(My rows with the fine-tuned detector come from one trained matcher, so their ID switches carry the usual jitter of about 10. The last row is the final configuration below: raw frames, the float16 detector, and only confident boxes embedded.)
 
 The better detector helps my tracker and not DeepSORT: I gain 1.3 HOTA, DeepSORT loses 0.1, and my lead grows from 0.7 to **2.1 HOTA**, with 3.7 more AssA, 2.6 more IDF1, and 16% fewer ID switches. Both trackers make more ID switches than before, and both lose AssA, because the detector now finds harder, partly hidden people that the public boxes missed, and each of them is one more chance to swap. My matcher and its score thresholds still come from the public boxes, whose scores behave differently, so this is a lower bound on what the pair can do.
 
@@ -512,14 +513,13 @@ Timed piece by piece on the validation half, one frame costs 4.0 ms to decode, 2
 
 The first change costs nothing. MOT17-08 averages 45.5 boxes per frame, but the tracker only reads the appearance of boxes scoring at least 0.6, 13.7 per frame, and matches the rest on overlap alone. Embedding just those cut the embed stage from 21.2 to 5.8 ms, and the tracks came out identical, all 10,428 rows. The second change runs the detector in float16 as a TorchScript graph, through RF-DETR's own `inference()` call. That cut detection from 28.4 to 15.4 ms, and the boxes barely moved: on 100 frames, confident boxes differ by 0.05 per frame, and matched boxes overlap by 99.1%. The tracks shift slightly with them, to 75 IDs instead of 78.
 
-At 29.0 ms, the whole pipeline keeps up with a 30 fps camera on a crowded street, on a laptop GPU.
+At 29.0 ms, the whole pipeline keeps up with a 30 fps camera on a crowded street, on a laptop GPU. Across all seven validation videos it averages 30.7 ms, and it scores 54.3 HOTA, the last row of the tracking table above: the float16 detector cost nothing measurable.
 
 ## Limitations
 
 - ID switches beat DeepSORT on average, not every time. Single training runs land anywhere from 95 to 108 switches, while DeepSORT stays at 102 to 103 however I nudge its cutoff. One flipped decision early in a video changes everything after it, and a learned matcher makes more close calls than fixed rules do.
 - The appearance model has met 45% of the validation people. Its mAP only counts unseen people, but the tracking numbers include the 152 people who also walk through the training half. DeepSORT uses the same features, so the comparison stays fair. The absolute numbers probably look a little better than they should.
 - The tracker doesn't report hidden people. MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
-- I measured the float16 detector's effect on boxes, not on the tracking scores. On 100 frames its confident boxes match the float32 ones at 99.1% overlap, so I expect the Phase 5 scores to hold, but I haven't rerun them.
 - The fine-tuned detector learned on the same seven videos it's scored on, from their first halves. I haven't tested its gain on footage from other cameras, like a bus.
 - Covering the head and shoulders more than halves recognition. Blocking the top 40% of a person drops mAP from 82.3 to 35.4 on the queries still visible enough to count (Phase 4), and a random 25 to 40% patch drops it from 81.2 to 55.1. Blocking augmentation helps against the random patch and the blocked head, not against blocks from below or the side.
 - I haven't tested lighting drift inside the tracker. The stress test changes single sightings. A whole video whose light drifts as the sun moves, or jumps in a tunnel, hasn't gone through the tracker yet.
@@ -610,7 +610,7 @@ uv run python -m reidtrack --det RFDETR --embeddings osnet_x0_5_mot17 --reranker
 - `detection.finetune` fine-tunes RF-DETR small until it plateaus. On Windows, set `PYTHONUTF8=1` first, since its progress display needs UTF-8.
 - `detection.detect` writes the fine-tuned detector's boxes as `det/RFDETR.txt` next to MOT17's own, so every command that takes `--det` can use them. `--subset test --sequences MOT17-08` covers a test video.
 - `python -m reidtrack --sequence MOT17-08` tracks one whole video from cached detections, test videos included, without scoring.
-- `python -m reidtrack.pipeline MOT17-08` runs the whole chain on raw frames, decode, detect, embed, and track, and writes the tracks plus each frame's stage times. `--plain-detector` runs the detector in float32 without compiling. The clip at the top of this page came from it and `reidtrack.viz MOT17-08 --results runs/pipeline_MOT17-08/MOT17-08.txt --timing runs/pipeline_MOT17-08/timing.csv --scale 0.5`.
+- `python -m reidtrack.pipeline MOT17-08` runs the whole chain on raw frames, decode, detect, embed, and track, and writes the tracks plus each frame's stage times. `--plain-detector` runs the detector in float32 without compiling, and `--split val_half` runs every training video's validation half and scores it. The clip at the top of this page came from it and `reidtrack.viz MOT17-08 --results runs/pipeline_MOT17-08/MOT17-08.txt --timing runs/pipeline_MOT17-08/MOT17-08_timing.csv --scale 0.5`.
 
 ### Evaluation
 
