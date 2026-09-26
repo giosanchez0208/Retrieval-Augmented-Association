@@ -107,9 +107,9 @@ Changing light and people blocking each other weaken the visual cues the appeara
 
 I changed each query crop of the unseen validation people one way at a time, lighting or blocking, and measured how much recognition drops against the clean score on the same queries. A blocked query only counts while at least 30% of the person still shows. I also retrained the appearance model with its lighting and blocking augmentations switched on and off, and once more with a second seed to measure noise, which moves each number by up to 4.6 points.
 
-![mAP lost under each change, by training recipe](docs/figures/stress_test.svg)
+![mAP lost under each change](docs/figures/stress_test.svg)
 
-*Seen above: mAP lost under each change for each training recipe, against the clean score on the same queries.*
+*Seen above: How much mAP each training recipe loses under each change to the query crop.*
 
 Lighting augmentation carries the lighting results: without it, a cool color cast costs 37 points of mAP, and with it, 2. With the full recipe, darkness and color casts cost 1.3 to 2.0 points and glare 10.1. Blocking remains the weak spot. Covering the head and shoulders drops mAP from 82.3 to 35.4. Random erasing during training helps against random patches and blocked heads, 23 and 41 points lost instead of 36 and 50, but not against blocks from below or the side.
 

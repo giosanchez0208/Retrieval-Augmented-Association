@@ -48,6 +48,33 @@ def _legend(items, x, y):
     return out
 
 
+def _mix(color, t):
+    """``color`` at strength ``t`` over white."""
+    rgb = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    return "#" + "".join(f"{round(255 + (c - 255) * t):02x}" for c in rgb)
+
+
+def heatmap(path, title, groups, columns, vmax, color, label_w=150, cell_w=96, cell_h=24):
+    """A grid of values shaded from white to ``color``; groups is [(name, [(row label, values per column)])]."""
+    top, group_h = 56, 22
+    rows = sum(len(r) for _, r in groups)
+    width, height = label_w + cell_w * len(columns) + 12, top + group_h * len(groups) + cell_h * rows + 10
+    body = [_text(12, 20, title, 13, weight="bold")]
+    body += [_text(label_w + (j + 0.5) * cell_w, top - 8, c, 11, "middle") for j, c in enumerate(columns)]
+    y = top
+    for name, group in groups:
+        body.append(_text(12, y + 16, name, 11, weight="bold"))
+        y += group_h
+        for label, values in group:
+            body.append(_text(24, y + cell_h / 2 + 4, label, 11))
+            for j, v in enumerate(values):
+                t, x = min(v / vmax, 1), label_w + j * cell_w
+                body += [_rect(x + 1, y + 1, cell_w - 2, cell_h - 2, _mix(color, t)),
+                         _text(x + cell_w / 2, y + cell_h / 2 + 4, f"{v:.1f}", 11, "middle", "#ffffff" if t > 0.8 else INK)]
+            y += cell_h
+    (OUT / path).write_text(_svg(width, height, body), encoding="utf-8")
+
+
 def hbars(path, title, labels, series, xmax, ticks, value_fmt="{:.1f}", ref=None, label_w=170, plot_w=360, note=None):
     """Horizontal bars, one group per label, one bar per series (name, values, color or per-bar colors)."""
     bar_h, gap = 11, 9
@@ -86,23 +113,19 @@ def hbars(path, title, labels, series, xmax, ticks, value_fmt="{:.1f}", ref=None
 def stress_test():
     # python -m reidtrack.retrieval.probe --models <each model>; mAP lost against the clean score on the
     # same queries (blocked queries count only while at least 30% of the person still shows)
-    probes = ["dark (x0.5)", "overexposed (x1.6)", "low contrast (glare)", "warm cast", "cool cast",
-              "hard shadow over one side", "blocked below (40%)", "blocked above (40%)", "blocked side (35%)",
-              "blocked anywhere (25-40%)"]
-    series = [("flips and shifts only", STRESS["osnet_x0_5_aug_geometry"], GRAY),
-              ("+ lighting", STRESS["osnet_x0_5_aug_lighting"], MINE),
-              ("+ blocking", STRESS["osnet_x0_5_aug_blocking"], BLOCK),
-              ("full recipe", STRESS["osnet_x0_5_mot17"], INK)]
-    hbars("stress_test.svg", "mAP lost when the query sighting changes, by training recipe", probes, series, 55,
-          [0, 10, 20, 30, 40, 50], label_w=190,
-          note="Retraining the full recipe with another seed moves each bar by up to 4.6. The gallery stays unchanged.")
+    changes = ["Dark", "Overexposed", "Glare", "Warm cast", "Cool cast", "Hard shadow",
+               "Lower 40%", "Upper 40%", "One side", "Random patch"]
+    recipes = ["osnet_x0_5_aug_geometry", "osnet_x0_5_aug_lighting", "osnet_x0_5_aug_blocking", "osnet_x0_5_mot17"]
+    rows = [(c, [STRESS[r][i] for r in recipes]) for i, c in enumerate(changes)]
+    heatmap("stress_test.svg", "mAP lost under each change", [("Lighting", rows[:6]), ("Blocking", rows[6:])],
+            ["Flips and shifts", "+ lighting", "+ blocking", "Full recipe"], 55, BLOCK)
 
 
 def idsw_anatomy():
     # idsw_anatomy on raa_pairwise_x0_5_iou_last_val and hyst_s{1,2,3}_0 (mean), and on deepsort_osnet_x0_5_mot17_calibrated
     labels = ["swap: took someone else's ID", "flip back a moment later", "lost, then restarted", "other"]
     hbars("idsw_anatomy.svg", "Why IDs changed on the validation half", labels,
-          [("mine, mean of 4 runs", [40.0, 28.0, 28.5, 3.0], MINE), ("DeepSORT", [36, 19, 41, 6], DEEPSORT)],
+          [("mine (mean of 4 runs)", [40.0, 28.0, 28.5, 3.0], MINE), ("DeepSORT", [36, 19, 41, 6], DEEPSORT)],
           50, [0, 10, 20, 30, 40, 50], value_fmt="{:g}", label_w=210)
 
 
