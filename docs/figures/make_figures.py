@@ -84,15 +84,18 @@ def hbars(path, title, labels, series, xmax, ticks, value_fmt="{:.1f}", ref=None
 
 
 def stress_test():
-    # python -m reidtrack.retrieval.probe --models osnet_x0_5_mot17
-    probes = ["clean", "dark (x0.5)", "overexposed (x1.6)", "low contrast (glare)", "warm cast", "cool cast",
+    # python -m reidtrack.retrieval.probe --models <each model>; mAP lost against the clean score on the
+    # same queries (blocked queries count only while at least 30% of the person still shows)
+    probes = ["dark (x0.5)", "overexposed (x1.6)", "low contrast (glare)", "warm cast", "cool cast",
               "hard shadow over one side", "blocked below (40%)", "blocked above (40%)", "blocked side (35%)",
               "blocked anywhere (25-40%)"]
-    values = STRESS["osnet_x0_5_mot17"]
-    colors = [GRAY] + [LIGHT] * 6 + [BLOCK] * 4
-    hbars("stress_test.svg", "Recognizing unseen people when the query sighting changes (mAP)", probes,
-          [("OSNet x0.5", values, colors)], 90, [0, 20, 40, 60, 80], ref=(values[0], f"clean {values[0]:.1f}"),
-          note="Blue: lighting changes. Red: a piece of someone else covers part of the person. The gallery stays unchanged.")
+    series = [("flips and shifts only", STRESS["osnet_x0_5_aug_geometry"], GRAY),
+              ("+ lighting", STRESS["osnet_x0_5_aug_lighting"], MINE),
+              ("+ blocking", STRESS["osnet_x0_5_aug_blocking"], BLOCK),
+              ("full recipe", STRESS["osnet_x0_5_mot17"], INK)]
+    hbars("stress_test.svg", "mAP lost when the query sighting changes, by training recipe", probes, series, 55,
+          [0, 10, 20, 30, 40, 50], label_w=190,
+          note="Retraining the full recipe with another seed moves each bar by up to 4.6. The gallery stays unchanged.")
 
 
 def idsw_anatomy():
@@ -173,8 +176,11 @@ def idsw_noise():
     (OUT / "idsw_noise.svg").write_text(_svg(width, height, body), encoding="utf-8")
 
 
-STRESS = {  # python -m reidtrack.retrieval.probe; order as in stress_test()
-    "osnet_x0_5_mot17": [78.1, 76.1, 74.3, 68.0, 76.8, 76.4, 73.1, 59.4, 32.7, 68.3, 52.0],
+STRESS = {  # mAP lost per probe, in the order of stress_test(); clean mAP 78.4, 79.0, 75.2, 78.1
+    "osnet_x0_5_aug_geometry": [16.0, 12.4, 34.4, 21.1, 37.4, 11.9, 17.3, 49.8, 5.5, 36.4],
+    "osnet_x0_5_aug_lighting": [1.7, 2.3, 6.8, 1.1, 0.3, 5.3, 15.5, 52.4, 7.2, 38.5],
+    "osnet_x0_5_aug_blocking": [20.4, 18.9, 45.5, 32.6, 49.4, 8.5, 19.5, 41.0, 7.4, 23.1],
+    "osnet_x0_5_mot17": [2.0, 3.8, 10.1, 1.3, 1.6, 5.0, 19.3, 46.9, 9.8, 26.1],
 }
 
 if __name__ == "__main__":

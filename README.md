@@ -400,15 +400,35 @@ The setting I have in mind for this tracker is a fixed CCTV camera inside a bus.
 
 I took the unseen validation people from Phase 2 and changed each query crop one way at a time, leaving every gallery crop untouched. That's the real situation: the tracker sees a person once under one light and has to find them again under another. The lighting changes halve or boost brightness, flatten contrast to 40%, tint the crop warm or cool, or throw a hard shadow over one half. Blocking covers part of the person with the same region of *another* person's crop. I deliberately didn't use the random noise the blocking augmentation trains on, since that would flatter it.
 
-![Recognition under lighting changes and blocking](docs/figures/stress_test.svg)
+A blocked query only counts if the person still shows at least 30% of themselves, the same rule the training crops follow, and I compare it with the clean score on the same queries. My first version of this test counted every blocked query, including people left with a fifth of themselves showing. Fixing that kept 86 to 90% of the queries and moved the drops by less than 2 points, so the blocking results hold either way.
 
-Seen above: mAP on unseen people when I change the query sighting one way at a time.
+With the full training recipe, the model mostly handles lighting. Darkening and color casts cost 1.3 to 2.0 mAP, overexposure 3.8, and a hard shadow 5.0. Glare is the exception: flattening contrast costs **10.1 mAP**, five times the cost of halving the brightness.
 
-The model mostly handles lighting. Darkening and color casts cost 1.3 to 2.0 mAP, overexposure 3.8, and a hard shadow 5.0. Glare is the exception: flattening contrast costs **10.1 mAP**, five times the cost of halving the brightness.
-
-It doesn't handle blocking. Covering the lower 40% of a person costs 18.7 mAP, one side 9.8, and a random patch of 25 to 40% costs 26.1. Covering the top 40%, the head and shoulders, costs **45.4** and leaves 32.7, less than half the clean score. The model recognizes people mostly by their upper body. My guess at why: in MOT17's crowds, other people hide legs more often than anything else, so the model learned to lean on the part that's usually visible. I haven't tested that.
+It doesn't handle blocking. Covering the lower 40% of a person costs 19.3 mAP, one side 9.8, and a random patch of 25 to 40% costs 26.1. Covering the top 40%, the head and shoulders, costs **46.9**, which leaves 35.4 on queries that score 82.3 clean. The model recognizes people mostly by their upper body. My guess at why: in MOT17's crowds, other people hide legs more often than anything else, so the model learned to lean on the part that's usually visible. I haven't tested that.
 
 One caveat worth stating: the blocking probes also put another person's clothes into the query, so part of each drop may be the model matching the blocker instead of losing the person. On a bus that's also the realistic case, since the thing in front of a passenger is usually another passenger. It also lines up with Phase 3's restarts: most of them are the bank failing to recognize someone after a gap of under a second, and on a busy bus that gap is usually someone walking past.
+
+### Which augmentation does what
+
+The full recipe trains with three groups of augmentations: flips and shifts, lighting changes, and random erasing for blocking. I retrained OSNet x0.5 with the lighting and blocking groups switched on and off, and once more with the full recipe and a different seed, to see how much retraining alone moves the numbers.
+
+![mAP lost under each change, by training recipe](docs/figures/stress_test.svg)
+
+Seen above: mAP lost under each change for each training recipe, against the clean score on the same queries.
+
+| mAP lost | Flips and shifts only | + lighting | + blocking | Full recipe | Full recipe, second seed |
+|---|---|---|---|---|---|
+| Clean mAP | 78.4 | 79.0 | 75.2 | 78.1 | 77.6 |
+| Dark | 16.0 | 1.7 | 20.4 | 2.0 | 2.0 |
+| Glare | 34.4 | 6.8 | 45.5 | 10.1 | 5.5 |
+| Cool cast | 37.4 | 0.3 | 49.4 | 1.6 | 1.2 |
+| Blocked above | 49.8 | 52.4 | 41.0 | 46.9 | 43.7 |
+| Blocked anywhere | 36.4 | 38.5 | 23.1 | 26.1 | 24.0 |
+| DeepSORT ID switches | 106 | 109 | 98 | 102 | 114 |
+
+Retraining the full recipe with another seed moves each number by up to 4.6 points and the ID switches by 12, so I only trust gaps bigger than that. Two effects survive. Lighting augmentation produces the lighting results: without it, a cool cast costs 37 points instead of 2. Blocking augmentation helps against a random patch, 23 points lost instead of 36, and against a blocked head, 41 instead of 50, but does nothing measurable against blocks from below or the side. Blocking without lighting also costs 3.2 points of clean mAP, while every other recipe stays within 1.4 points of each other.
+
+None of it shows on MOT17 tracking: every ID-switch difference between these models is inside the 12-switch noise. My guess is that MOT17's lighting barely changes between two sightings of the same person, so the benefit only appears under the conditions the stress test adds.
 
 ### Skipped frames
 
@@ -437,7 +457,7 @@ So training the matcher on skipped frames has little to win, at most those 1.6 A
 - The appearance model has met 45% of the validation people. Its mAP only counts unseen people, but the tracking numbers include the 152 people who also walk through the training half. DeepSORT uses the same features, so the comparison stays fair. The absolute numbers probably look a little better than they should.
 - The tracker doesn't report hidden people. MOT17 keeps annotating people while they're hidden. On the training half, showing each hidden person's predicted box for 0.6 s raised HOTA by 1.0, and ID switches by 30%, from 156 to 202, because the predicted box drifts onto whoever is nearby. So it stays off by default.
 - No detector runs in the loop yet. Every number here uses MOT17's public detections, so the real-time claim rests on adding up measured parts, not on timing the whole pipeline.
-- Covering the head and shoulders more than halves recognition. Blocking the top 40% of a person drops mAP from 78.1 to 32.7 (Phase 4), and a random 25 to 40% patch drops it to 52.0.
+- Covering the head and shoulders more than halves recognition. Blocking the top 40% of a person drops mAP from 82.3 to 35.4 on the queries still visible enough to count (Phase 4), and a random 25 to 40% patch drops it from 81.2 to 55.1. Blocking augmentation helps against the random patch and the blocked head, not against blocks from below or the side.
 - I haven't tested lighting drift inside the tracker. The stress test changes single sightings. A whole video whose light drifts as the sun moves, or jumps in a tunnel, hasn't gone through the tracker yet.
 - I haven't tested re-entry. The bank can bring back someone who walked out and returned, but MOT17 gives returning people new IDs, so that mode stays off in every number above.
 
