@@ -124,3 +124,16 @@ def test_grayscale_augmentation_makes_some_crops_colorless():
     rgb = out * std + mean
     colorless = (rgb.max(dim=1).values - rgb.min(dim=1).values).amax(dim=(1, 2)) < 1e-5
     assert 16 < int(colorless.sum()) < 48
+
+
+def test_blocked_queries_count_only_while_still_visible_enough():
+    from reidtrack.retrieval.probe import still_visible
+
+    vis = np.array([1.0, 0.55, 0.4, 1.0])
+    below = still_visible("blocked below", vis, 256, 128)
+
+    np.testing.assert_allclose(below, vis * 0.6, atol=0.005)  # the lower 40% covered, to the pixel
+    assert (below >= 0.3).tolist() == [True, True, False, True]  # 0.4 x 0.6 falls under the 30% rule
+    np.testing.assert_allclose(still_visible("dark", vis, 256, 128), vis)
+    anywhere = still_visible("blocked anywhere", np.ones(50), 256, 128)
+    assert ((anywhere >= 0.58) & (anywhere <= 0.77)).all()  # a 25 to 40% patch

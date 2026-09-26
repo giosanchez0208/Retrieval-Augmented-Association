@@ -35,11 +35,14 @@ def retrieval_scores(
     batch: int = 256,
     device: str = "cuda",
     perturb: Callable[[torch.Tensor, np.ndarray], torch.Tensor] | None = None,
+    query_mask: np.ndarray | None = None,
 ) -> dict[str, float]:
     """mAP and Rank-1 (%) over queries from unseen people; ``embed`` maps uint8 crops to features.
 
     ``perturb`` changes the query crops only, as ``perturb(crops, rows)`` on uint8 crops, so
     each query is a person seen under other conditions searched against normal sightings.
+    ``query_mask`` keeps only the usual queries whose row is True, for example the ones
+    still visible enough after a stress test covers part of them.
     """
 
     def embed_all(change=None):
@@ -66,6 +69,8 @@ def retrieval_scores(
         for identity in np.unique(ids[rows][unseen]):
             members = np.flatnonzero(ids[rows] == identity)
             is_query[members[::query_every]] = True
+        if query_mask is not None:
+            is_query &= query_mask[rows]
         sims = queries[rows[is_query]] @ feats[rows].T
         for q, sim in zip(np.flatnonzero(is_query), sims):
             same = ids[rows] == ids[rows[q]]

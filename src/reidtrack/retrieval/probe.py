@@ -64,6 +64,20 @@ def _region(where: str, row: int, h: int, w: int) -> tuple[slice, slice]:
     return slice(top, top + eh), slice(left, left + ew)
 
 
+def still_visible(name: str, visibility: np.ndarray, h: int, w: int) -> np.ndarray:
+    """How much of each person still shows after a probe: their annotated visibility times
+    the share of the crop left uncovered. Conservative, since it assumes the new block
+    never overlaps what was already hidden."""
+    if name not in BLOCK:
+        return visibility
+    where = BLOCK[name]
+    uncovered = np.empty(len(visibility))
+    for row in range(len(visibility)):
+        ys, xs = _region(where, row, h, w)
+        uncovered[row] = 1 - (ys.stop - ys.start) * (xs.stop - xs.start) / (h * w)
+    return visibility * uncovered
+
+
 def make_perturb(name: str, images: np.ndarray, device: str) -> Callable[[torch.Tensor, np.ndarray], torch.Tensor] | None:
     """``perturb(crops, rows)`` for ``retrieval_scores``; uint8 in, uint8 out. ``images``
     are all crops of the set, from which blocking takes another person's piece."""
@@ -103,7 +117,9 @@ def main(argv: list[str] | None = None) -> int:
     train, val = load_crops(args.root, "train_half"), load_crops(args.root, "val_half")
     seen = set(train.identities().tolist())
     amp = args.device.startswith("cuda")
-    rows = []
+    h, w = val.images.shape[-2:]
+    min_visible = 0.3  # the same rule the crops follow: less than 30% showing is not a fair query
+    rows, summary = [], []
     for name in args.models:
         model = load_retriever(args.weights / name / "last.pt").eval().to(args.device)
 
@@ -111,14 +127,25 @@ def main(argv: list[str] | None = None) -> int:
             with torch.autocast(args.device.split(":")[0], dtype=torch.float16, enabled=amp):
                 return model(normalize(images))
 
-        scores = [retrieval_scores(embed, val, seen, device=args.device,
-                                   perturb=make_perturb(p, val.images, args.device))["mAP"] for p in PROBES]
-        rows.append([name, *(f"{s:.1f}" for s in scores), f"{np.mean(scores[1:]) - scores[0]:+.1f}"])
-        print(f"{name}: " + ", ".join(f"{p} {s:.1f}" for p, s in zip(PROBES, scores)), file=sys.stderr, flush=True)
+        clean = retrieval_scores(embed, val, seen, device=args.device)
+        changes = []
+        for p in PROBES:
+            fair = still_visible(p, val.visibility, h, w) >= min_visible
+            mask = None if fair.all() else fair
+            s = retrieval_scores(embed, val, seen, device=args.device,
+                                 perturb=make_perturb(p, val.images, args.device), query_mask=mask)
+            base = clean if mask is None else retrieval_scores(embed, val, seen, device=args.device, query_mask=mask)
+            changes.append(s["mAP"] - base["mAP"])
+            rows.append([name, p, f"{s['mAP']:.1f}", f"{base['mAP']:.1f}", f"{s['mAP'] - base['mAP']:+.1f}",
+                         f"{100 * s['queries'] / clean['queries']:.0f}%"])
+        summary.append(f"{name}: clean {clean['mAP']:.1f}, " + ", ".join(
+            f"{p} {c:+.1f}" for p, c in zip(PROBES[1:], changes[1:])) + f", mean {np.mean(changes[1:]):+.1f}")
+        print(summary[-1], file=sys.stderr, flush=True)
         del model
-    print(format_table(["model", *PROBES, "mean change"], rows,
+    print(format_table(["model", "probe", "mAP", "clean, same queries", "change", "queries kept"], rows,
                        caption="mAP on unseen validation people, query crop changed one way at a time",
-                       note="gallery crops unchanged; blocking takes a piece of another person's crop"))
+                       note="gallery unchanged; blocking takes a piece of another person's crop and keeps only "
+                            "queries still at least 30% visible"))
     return 0
 
 
