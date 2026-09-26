@@ -3,6 +3,8 @@
     python -m reidtrack.pipeline MOT17-08
 
 Frames are decoded on the GPU and stay there for the detector and the appearance model.
+The detector runs in float16 as a TorchScript graph, and only boxes confident enough for
+the tracker to use their appearance get embedded.
 Writes the tracks in MOT format and a CSV of each frame's stage times (ms) to
 runs/pipeline_<sequence>/, which ``reidtrack.viz --timing`` can print under each frame.
 """
@@ -25,7 +27,7 @@ STAGES = ("decode", "detect", "embed", "track")
 
 class Pipeline:
     def __init__(self, detector: Path, embedder: Path, reranker: Path, width: int, height: int, frame_rate: float,
-                 min_score: float = 0.1) -> None:
+                 min_score: float = 0.1, fast_detector: bool = True) -> None:
         from rfdetr import RFDETRSmall
 
         from reidtrack.association.reranker import load_reranker
@@ -34,6 +36,8 @@ class Pipeline:
         from reidtrack.tracker import RetrievalTracker, TrackerConfig
 
         self.detector = RFDETRSmall(pretrain_weights=str(detector), device="cuda")
+        if fast_detector:  # 27.7 -> 12.7 ms on MOT17-08, with 99.1% overlap between the boxes
+            self.detector.inference(compile=True, dtype=torch.float16, batch_size=1)
         self.min_score, self.person = min_score, None
         embed = Embedder(embedder)
         self.decode_jpeg, self.mean, self.std = embed.decode, embed.mean, embed.std
@@ -75,7 +79,10 @@ class Pipeline:
         keep = d.class_id == self.person
         xyxy, scores = d.xyxy[keep].astype(np.float64), d.confidence[keep].astype(np.float64)
         mark("detect")
-        feats = self._embed(image, xyxy)
+        # the tracker only reads appearance for boxes at or above high_score, so skip the rest
+        feats = np.zeros((len(xyxy), self.dim), dtype=np.float32)
+        confident = scores >= self.tracker.cfg.high_score
+        feats[confident] = self._embed(image, xyxy[confident])
         mark("embed")
         out = self.tracker.update(xyxy, scores, feats)
         mark("track")
@@ -91,13 +98,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reranker", type=Path, default=Path("data/weights/reranker/pairwise_osnet_x0_5_iou_last.pt"))
     parser.add_argument("--root", type=Path, default=Path("data/mot17"))
     parser.add_argument("--out", type=Path, help="default: runs/pipeline_<sequence>")
+    parser.add_argument("--plain-detector", action="store_true", help="run the detector in float32 without compiling")
     args = parser.parse_args(argv)
 
     from reidtrack.data.mot import Tracks, save_tracks
     from reidtrack.data.mot17 import Mot17
 
     seq = Mot17(args.root).sequence(args.sequence)
-    pipe = Pipeline(args.detector, args.embedder, args.reranker, seq.info.width, seq.info.height, seq.info.frame_rate)
+    pipe = Pipeline(args.detector, args.embedder, args.reranker, seq.info.width, seq.info.height, seq.info.frame_rate,
+                    fast_detector=not args.plain_detector)
     out = args.out or Path("runs") / f"pipeline_{seq.name}"
     out.mkdir(parents=True, exist_ok=True)
     rows, frames, ids, boxes, scores = [], [], [], [], []
